@@ -1,0 +1,55 @@
+[project]
+name = "leilao-ia-backend"
+version = "0.1.0"
+description = "Backend multi-agente para precificação de imóveis de leilão"
+requires-python = ">=3.12"
+readme = "../README.md"
+license = { text = "Proprietary" }
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.1",
+    "httpx>=0.27.2",
+    "structlog>=24.4.0",
+    # Orquestração & LLM
+    "langgraph>=0.2.40",
+    "langchain>=0.3.7",
+    "langchain-openai>=0.2.8",
+    "openai>=1.54.0",
+    # Scraping
+    "firecrawl-py>=4.20.0",
+    # Banco de dados
+    "supabase>=2.9.1",
+    # Geolocalização
+    "googlemaps>=4.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.7.4",
+    "mypy>=1.13.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

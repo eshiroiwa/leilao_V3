@@ -1,0 +1,1 @@
+"""Configurações transversais (settings, logging)."""

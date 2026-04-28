@@ -1,0 +1,27 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Validação / config
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+
+# HTTP & logging
+httpx>=0.27.2
+structlog>=24.4.0
+
+# Orquestração & LLM
+langgraph>=0.2.40
+langchain>=0.3.7
+langchain-openai>=0.2.8
+openai>=1.54.0
+
+# Scraping
+firecrawl-py>=4.20.0
+
+# Supabase
+supabase>=2.9.1
+
+# Google Maps Platform
+googlemaps>=4.10.0
