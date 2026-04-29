@@ -100,6 +100,21 @@ class SupabaseService:
             raise SupabaseError(f"Falha ao deletar property {property_id}: {exc}") from exc
         return bool(res.data)
 
+    def get_property_by_id(self, property_id: str) -> dict[str, Any] | None:
+        """Lê um property por ID. Retorna None se não existe."""
+        try:
+            res = (
+                self._client.table("properties")
+                .select("*")
+                .eq("id", property_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao consultar property {property_id}: {exc}") from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
     def list_properties(
         self,
         *,
@@ -137,6 +152,120 @@ class SupabaseService:
             self._client.table("agent_runs").update(payload).eq("id", run_id).execute()
         except Exception as exc:
             raise SupabaseError(f"Falha ao atualizar agent_run: {exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Listings (AGENTE 2 — comparáveis-candidatos)
+    # ------------------------------------------------------------------ #
+    def get_listings_by_urls(self, urls: list[str]) -> list[dict[str, Any]]:
+        """Carrega listings já scrapeados (cache do AGENTE 2)."""
+        if not urls:
+            return []
+        try:
+            res = (
+                self._client.table("listings")
+                .select("*")
+                .in_("source_url", urls)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao consultar listings: {exc}") from exc
+        return res.data or []
+
+    def upsert_listing(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Upsert por ``source_url``. ``location`` em EWKT como em properties."""
+        logger.info("supabase.listing.upsert", source_url=payload.get("source_url"))
+        try:
+            res = (
+                self._client.table("listings")
+                .upsert(payload, on_conflict="source_url")
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha no upsert de listings: {exc}") from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError("Upsert de listing não retornou registros.")
+        return rows[0]
+
+    # ------------------------------------------------------------------ #
+    # Valuations (AGENTE 2 — resultado da CMA)
+    # ------------------------------------------------------------------ #
+    def insert_valuation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            res = self._client.table("valuations").insert(payload).execute()
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao inserir valuation: {exc}") from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError("Insert de valuation não retornou registros.")
+        return rows[0]
+
+    def insert_valuation_comparables(
+        self, valuation_id: str, comparables: list[dict[str, Any]]
+    ) -> None:
+        """Insere o join valuation_comparables em batch (não-fatal se vazio)."""
+        if not comparables:
+            return
+        rows = [{"valuation_id": valuation_id, **c} for c in comparables]
+        try:
+            self._client.table("valuation_comparables").insert(rows).execute()
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao inserir valuation_comparables: {exc}"
+            ) from exc
+
+    def list_valuations_by_property(
+        self, property_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        try:
+            res = (
+                self._client.table("valuations")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao listar valuations: {exc}") from exc
+        return res.data or []
+
+    def get_valuation_with_comparables(self, valuation_id: str) -> dict[str, Any] | None:
+        """Devolve a valuation + lista de comparáveis com dados básicos do listing."""
+        try:
+            val_res = (
+                self._client.table("valuations")
+                .select("*")
+                .eq("id", valuation_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao consultar valuation: {exc}") from exc
+        rows = val_res.data or []
+        if not rows:
+            return None
+        valuation = rows[0]
+
+        try:
+            comp_res = (
+                self._client.table("valuation_comparables")
+                .select(
+                    "distance_m, similarity_score, weight, used, rejection_reason, "
+                    "listings(id, source, source_url, title:condo_name, "
+                    "property_type, area_total_m2, bedrooms, bathrooms, "
+                    "parking_spaces, neighborhood, city, state, latitude, "
+                    "longitude, listed_price, geocoding_confidence)"
+                )
+                .eq("valuation_id", valuation_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar comparables da valuation {valuation_id}: {exc}"
+            ) from exc
+        valuation["comparables"] = comp_res.data or []
+        return valuation
 
 
 @lru_cache(maxsize=1)

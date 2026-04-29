@@ -161,11 +161,110 @@ create index if not exists idx_agent_runs_status     on public.agent_runs(status
 create index if not exists idx_agent_runs_started_at on public.agent_runs(started_at desc);
 
 -- =============================================================================
+-- AGENTE 2 — Comparáveis (CMA)
+-- =============================================================================
+-- listings → anúncios coletados de portais (VivaReal/ZAP)
+create table if not exists public.listings (
+  id                       uuid primary key default gen_random_uuid(),
+  source                   text not null,
+  source_url               text not null unique,
+  external_id              text,
+  property_type            text,
+  area_total_m2            numeric(10,2),
+  area_useful_m2           numeric(10,2),
+  bedrooms                 smallint,
+  bathrooms                smallint,
+  parking_spaces           smallint,
+  condo_name               text,
+  amenities                jsonb,
+  address_full             text,
+  street                   text,
+  number                   text,
+  neighborhood             text,
+  city                     text,
+  state                    text,
+  postal_code              text,
+  location                 geography(Point, 4326),
+  latitude                 double precision generated always as (ST_Y(location::geometry)) stored,
+  longitude                double precision generated always as (ST_X(location::geometry)) stored,
+  geocoding_confidence     text,
+  listed_price             numeric(14,2),
+  monthly_condo_fee        numeric(10,2),
+  iptu                     numeric(10,2),
+  currency                 char(3) default 'BRL',
+  photos_count             smallint,
+  advertiser_type          text,
+  reliability_score        numeric(4,3),
+  listed_at                date,
+  scraped_at               timestamptz not null default now(),
+  raw_markdown             text,
+  raw_extraction           jsonb,
+  errors                   jsonb,
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now()
+);
+
+drop trigger if exists trg_listings_updated on public.listings;
+create trigger trg_listings_updated
+before update on public.listings
+for each row execute function public.set_updated_at();
+
+create index if not exists idx_listings_location_gix      on public.listings using gist(location);
+create index if not exists idx_listings_city_neighborhood on public.listings(city, neighborhood, property_type);
+create index if not exists idx_listings_scraped_at        on public.listings(scraped_at desc);
+create index if not exists idx_listings_condo_name        on public.listings(condo_name) where condo_name is not null;
+create index if not exists idx_listings_lat_lng           on public.listings(latitude, longitude);
+
+-- valuations → resultado de cada CMA
+create table if not exists public.valuations (
+  id                       uuid primary key default gen_random_uuid(),
+  property_id              uuid not null references public.properties(id) on delete cascade,
+  agent_run_id             uuid references public.agent_runs(id) on delete set null,
+  estimated_price          numeric(14,2),
+  price_lower_bound        numeric(14,2),
+  price_upper_bound        numeric(14,2),
+  ppm2_estimated           numeric(10,2),
+  confidence               text not null check (confidence in ('HIGH','MEDIUM','LOW','INSUFFICIENT')),
+  method                   text,
+  comparables_used         smallint not null default 0,
+  comparables_rejected     smallint not null default 0,
+  search_radius_m          integer,
+  search_strategy          text,
+  firecrawl_calls          smallint not null default 0,
+  llm_calls                smallint not null default 0,
+  cost_estimate_brl        numeric(10,4),
+  metadata                 jsonb,
+  errors                   jsonb,
+  created_at               timestamptz not null default now()
+);
+
+create index if not exists idx_valuations_property   on public.valuations(property_id);
+create index if not exists idx_valuations_created_at on public.valuations(created_at desc);
+create index if not exists idx_valuations_confidence on public.valuations(confidence);
+
+-- valuation_comparables → join (peso, distância, motivo)
+create table if not exists public.valuation_comparables (
+  valuation_id        uuid not null references public.valuations(id) on delete cascade,
+  listing_id          uuid not null references public.listings(id)   on delete cascade,
+  distance_m          numeric(10,2),
+  similarity_score    numeric(4,3),
+  weight              numeric(6,4),
+  used                boolean not null default false,
+  rejection_reason    text,
+  primary key (valuation_id, listing_id)
+);
+
+create index if not exists idx_valcomp_listing on public.valuation_comparables(listing_id);
+
+-- =============================================================================
 -- Row Level Security (placeholder — refine conforme regras de auth do projeto)
 -- =============================================================================
-alter table public.auctioneers enable row level security;
-alter table public.properties  enable row level security;
-alter table public.agent_runs  enable row level security;
+alter table public.auctioneers           enable row level security;
+alter table public.properties            enable row level security;
+alter table public.agent_runs            enable row level security;
+alter table public.listings              enable row level security;
+alter table public.valuations            enable row level security;
+alter table public.valuation_comparables enable row level security;
 
 -- Política de leitura pública (ajuste conforme necessidade real)
 drop policy if exists "public read auctioneers" on public.auctioneers;
@@ -175,5 +274,14 @@ create policy "public read auctioneers" on public.auctioneers
 drop policy if exists "public read properties" on public.properties;
 create policy "public read properties" on public.properties
   for select using (true);
+
+drop policy if exists "public read listings" on public.listings;
+create policy "public read listings" on public.listings for select using (true);
+
+drop policy if exists "public read valuations" on public.valuations;
+create policy "public read valuations" on public.valuations for select using (true);
+
+drop policy if exists "public read valuation_comparables" on public.valuation_comparables;
+create policy "public read valuation_comparables" on public.valuation_comparables for select using (true);
 
 -- Escritas só via service_role (a API roda como service_role no backend).

@@ -18,6 +18,75 @@ export type ScraperRunResponse = {
   saved_property: Property | null;
 };
 
+export type Confidence = "HIGH" | "MEDIUM" | "LOW" | "INSUFFICIENT";
+
+export type ValuationSummary = {
+  valuation_id: string | null;
+  confidence: Confidence;
+  estimated_price: number | null;
+  price_lower_bound: number | null;
+  price_upper_bound: number | null;
+  ppm2_estimated: number | null;
+  comparables_used: number;
+  search_strategy: "condo" | "street" | "neighborhood" | "radius" | null;
+  search_radius_m: number | null;
+  firecrawl_calls: number;
+  llm_calls: number;
+  cost_estimate_brl: number;
+  warnings: string[];
+};
+
+export type Valuation = {
+  id: string;
+  property_id: string;
+  agent_run_id: string | null;
+  estimated_price: number | null;
+  price_lower_bound: number | null;
+  price_upper_bound: number | null;
+  ppm2_estimated: number | null;
+  confidence: Confidence;
+  method: string | null;
+  comparables_used: number;
+  comparables_rejected: number;
+  search_radius_m: number | null;
+  search_strategy: string | null;
+  firecrawl_calls: number;
+  llm_calls: number;
+  cost_estimate_brl: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type ValuationComparable = {
+  distance_m: number | null;
+  similarity_score: number | null;
+  weight: number | null;
+  used: boolean;
+  rejection_reason: string | null;
+  listings: {
+    id: string;
+    source: string;
+    source_url: string;
+    title: string | null;
+    property_type: string | null;
+    area_total_m2: number | null;
+    bedrooms: number | null;
+    bathrooms: number | null;
+    parking_spaces: number | null;
+    neighborhood: string | null;
+    city: string | null;
+    state: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    listed_price: number | null;
+    geocoding_confidence: string | null;
+  };
+};
+
+export type ValuationDetail = Valuation & {
+  comparables: ValuationComparable[];
+};
+
 export type Property = {
   id: string;
   source_url: string;
@@ -110,4 +179,21 @@ export const api = {
     request<void>(`/api/v1/properties/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+
+  // ===== AGENTE 2 (CMA) =====
+  valuateProperty: (id: string) =>
+    request<ValuationSummary>(
+      `/api/v1/properties/${encodeURIComponent(id)}/valuate`,
+      { method: "POST" },
+    ),
+
+  listValuations: (propertyId: string) =>
+    request<Valuation[]>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/valuations`,
+    ),
+
+  getValuationDetail: (propertyId: string, valuationId: string) =>
+    request<ValuationDetail>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/valuations/${encodeURIComponent(valuationId)}`,
+    ),
 };

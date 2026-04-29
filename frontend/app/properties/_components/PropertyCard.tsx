@@ -8,6 +8,7 @@ import type { Property } from "@/lib/api";
 import { cn, formatBRL, formatDateTimeBR } from "@/lib/utils";
 
 import { DeletePropertyButton } from "./DeletePropertyButton";
+import { ValuateButton } from "./ValuateButton";
 
 const confidenceVariant: Record<
   string,
@@ -153,6 +154,10 @@ export function PropertyCard({
           >
             Fonte <ExternalLink className="size-3" />
           </a>
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <ValuateButton propertyId={property.id} variant="compact" />
         </div>
       </CardContent>
     </Card>

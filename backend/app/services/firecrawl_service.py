@@ -73,6 +73,46 @@ class FirecrawlService:
             "html": getattr(doc, "html", None),
         }
 
+    # ------------------------------------------------------------------ #
+    # Search — usado pelo AGENTE 2 para descobrir anúncios candidatos.
+    # ------------------------------------------------------------------ #
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        timeout_ms: int = 30_000,
+    ) -> list[dict[str, Any]]:
+        """Busca web e devolve uma lista de ``{"url","title","description"}``.
+
+        Cada call consome 1 crédito Firecrawl. Erros são logados e devolvem
+        lista vazia (busca degradada nunca aborta o pipeline; o caller
+        pode tentar a próxima estratégia).
+        """
+        logger.info("firecrawl.search.start", query=query, limit=limit)
+        try:
+            res = self._client.search(query, limit=limit, timeout=timeout_ms)
+        except Exception as exc:
+            logger.error("firecrawl.search.exception", query=query, error=str(exc))
+            return []
+
+        # SDK v4: SearchResult Pydantic com .web (lista de SearchResultWeb).
+        web = getattr(res, "web", None) or []
+        out: list[dict[str, Any]] = []
+        for item in web:
+            url = getattr(item, "url", None)
+            if not url:
+                continue
+            out.append(
+                {
+                    "url": url,
+                    "title": getattr(item, "title", None),
+                    "description": getattr(item, "description", None),
+                }
+            )
+        logger.info("firecrawl.search.ok", query=query, n_results=len(out))
+        return out
+
 
 @lru_cache(maxsize=1)
 def get_firecrawl_service() -> FirecrawlService:

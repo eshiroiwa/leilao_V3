@@ -101,26 +101,48 @@ No SQL Editor do Supabase, execute o conteúdo de
 [`backend/app/db/schema.sql`](backend/app/db/schema.sql). Ele habilita PostGIS e cria
 todas as tabelas, índices e triggers.
 
-### 3. Backend
+### 3. Instalação (uma vez só)
 
 ```bash
+# Backend
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+deactivate
+cd ..
+
+# Frontend
+cd frontend && npm install && cd ..
 ```
 
-Acesse a documentação interativa em <http://localhost:8000/docs>.
+### 4. Subir o sistema (dia a dia)
 
-### 4. Frontend
+A partir da raiz do projeto, basta um comando — sobe **backend + frontend** juntos
+e, ao pressionar `Ctrl+C`, **derruba os dois**:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+./dev.sh
 ```
 
-UI em <http://localhost:3000>.
+- Backend: <http://localhost:8000/docs>
+- Frontend: <http://localhost:3000>
+
+> O `dev.sh` cuida de matar processos antigos na porta 8000, esperar o backend
+> ficar pronto, prefixar logs com `[BACKEND]`/`[FRONTEND]` e garantir que o trap
+> de saída encerre os dois processos juntos (incluindo qualquer filho do uvicorn
+> com `--reload`).
+
+Se preferir rodar manualmente em terminais separados, os comandos clássicos
+continuam funcionando:
+
+```bash
+# Terminal 1
+cd backend && source .venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+
+# Terminal 2
+cd frontend && npm run dev
+```
 
 ---
 
