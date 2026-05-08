@@ -56,6 +56,19 @@ class ExtractedAuctionData(BaseModel):
             "'terreno', 'comercial', 'rural', 'galpão', 'outro'."
         ),
     )
+    image_url: str | None = Field(
+        None,
+        description=(
+            "URL ABSOLUTA (https://...) da PRIMEIRA fotografia do imóvel "
+            "encontrada no markdown. Imagens aparecem no formato ![alt](url). "
+            "IGNORE logos do leiloeiro, ícones de UI, banners, ads, mapas "
+            "estáticos e thumbnails de outros lotes. PRIORIZE URLs que pareçam "
+            "fotografias do imóvel — geralmente em CDN com sufixos .jpg/.jpeg/"
+            ".png/.webp e tamanhos grandes (palavras como 'large', 'big', "
+            "ou path com 'imovel', 'lote', 'foto', 'image'). "
+            "Se nada parecer foto do imóvel, devolva null."
+        ),
+    )
 
     address: ExtractedAddress = Field(default_factory=ExtractedAddress)
 
@@ -88,4 +101,39 @@ class ExtractedAuctionData(BaseModel):
     encumbrances_summary: str | None = Field(
         None,
         description="Resumo de ônus, dívidas, ações ou observações jurídicas relevantes.",
+    )
+
+    # ---- Custos do edital (alimentam o Agente 3 — Análise de Oportunidade) ----
+    iptu_arrears: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "IPTU em atraso EXPLICITAMENTE mencionado no edital, em BRL. "
+            "Procure por trechos como 'IPTU em atraso', 'débitos de IPTU', "
+            "'tributos municipais devidos', 'IPTU vencido'. NÃO inclua o IPTU "
+            "do exercício corrente; só o atrasado/vencido. Se o edital diz "
+            "apenas 'sob responsabilidade do arrematante' SEM valor, devolva null."
+        ),
+    )
+    condo_arrears: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Condomínio em atraso EXPLICITAMENTE mencionado no edital, em BRL. "
+            "Procure por 'condomínio em atraso', 'débitos condominiais', "
+            "'taxas de condomínio em aberto'. Se o valor não está informado, "
+            "devolva null (NUNCA chute)."
+        ),
+    )
+    auctioneer_fee_pct: float | None = Field(
+        None,
+        ge=0,
+        le=0.20,
+        description=(
+            "Comissão do leiloeiro como FRAÇÃO (0.05 = 5%). Padrão histórico "
+            "do mercado: 5% para PF/PJ. Em VENDA DIRETA / ONLINE da CAIXA "
+            "geralmente não há comissão (devolva 0.0). Se o edital cita um "
+            "percentual diferente (ex.: 5%, 6%, 3%), devolva esse valor como "
+            "fração. Se nada for dito, devolva null para usarmos o default."
+        ),
     )

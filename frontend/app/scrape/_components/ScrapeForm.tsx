@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 
+import { PropertyImage } from "@/components/PropertyImage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -105,20 +106,27 @@ function ScrapeResult({ result }: { result: ScraperRunResponse }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {property && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Título" value={property.title} />
-            <Field label="Tipo" value={property.property_type} />
-            <Field label="Cidade / UF" value={`${property.city ?? "—"} / ${property.state ?? "—"}`} />
-            <Field label="Bairro" value={property.neighborhood} />
-            <Field label="Endereço" value={property.address_full} className="md:col-span-2" />
-            <Field label="Avaliação" value={formatBRL(property.appraisal_value)} />
-            <Field label="1ª praça" value={formatBRL(property.minimum_bid_first)} />
-            <Field label="2ª praça" value={formatBRL(property.minimum_bid_second)} />
-            <Field
-              label="Confiança geo"
-              value={property.geocoding_confidence ?? "—"}
+          <>
+            <PropertyImage
+              src={property.image_url}
+              alt={property.title ?? "Foto do imóvel"}
+              className="rounded-md border"
             />
-          </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Título" value={property.title} />
+              <Field label="Tipo" value={property.property_type} />
+              <Field label="Cidade / UF" value={`${property.city ?? "—"} / ${property.state ?? "—"}`} />
+              <Field label="Bairro" value={property.neighborhood} />
+              <Field label="Endereço" value={property.address_full} className="md:col-span-2" />
+              <Field label="Avaliação" value={formatBRL(property.appraisal_value)} />
+              <Field label="1ª praça" value={formatBRL(property.minimum_bid_first)} />
+              <Field label="2ª praça" value={formatBRL(property.minimum_bid_second)} />
+              <Field
+                label="Confiança geo"
+                value={property.geocoding_confidence ?? "—"}
+              />
+            </div>
+          </>
         )}
 
         {result.warnings.length > 0 && (

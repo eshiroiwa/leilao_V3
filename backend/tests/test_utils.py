@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.agents.scraper.utils import (
+    sanitize_image_url,
     sanitize_neighborhood,
     sanitize_number,
     sanitize_street,
@@ -100,3 +101,48 @@ def test_sanitize_street(raw: str | None, expected: str | None) -> None:
 )
 def test_sanitize_number(raw: str | None, expected: str | None) -> None:
     assert sanitize_number(raw) == expected
+
+
+# =============================================================================
+# sanitize_image_url
+# =============================================================================
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # válidas
+        (
+            "https://cdn.leiloeiro.com/imovel/12345/foto1-large.jpg",
+            "https://cdn.leiloeiro.com/imovel/12345/foto1-large.jpg",
+        ),
+        (
+            "https://resizer.glbimg.com/imovel/abc.jpeg",
+            "https://resizer.glbimg.com/imovel/abc.jpeg",
+        ),
+        # CDN sem extensão (imgix-style) — aceito
+        (
+            "https://imgix.example/foo?w=1280&h=720",
+            "https://imgix.example/foo?w=1280&h=720",
+        ),
+        # logo/ícone/banner → rejeita
+        ("https://www.zuk.com.br/static/logo.png", None),
+        ("https://example.com/favicon.ico", None),
+        ("https://example.com/sprite.svg", None),
+        ("https://cdn.x/banners/promo.jpg", None),
+        ("https://cdn.x/icons/whatsapp.png", None),
+        # mapa estático → rejeita
+        ("https://maps.googleusercontent.com/maps?...", None),
+        # thumbnails → rejeita
+        ("https://cdn.x/imovel/123/thumb_50x50.jpg", None),
+        ("https://cdn.x/thumbs/foto.jpg", None),
+        # url relativa / vazia / não http → rejeita
+        ("/media/foto.jpg", None),
+        ("", None),
+        (None, None),
+        ("javascript:alert(1)", None),
+        # extensão errada (PDF, vídeo) → rejeita
+        ("https://cdn.x/imovel/123/edital.pdf", None),
+        ("https://cdn.x/imovel/123/walkthrough.mp4", None),
+    ],
+)
+def test_sanitize_image_url(raw: str | None, expected: str | None) -> None:
+    assert sanitize_image_url(raw) == expected

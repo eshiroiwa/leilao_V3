@@ -57,6 +57,54 @@ Regras OBRIGATÓRIAS:
     - 'sodre-santoro' → sodresantoro.com.br
     - 'biasi'         → biasileiloes.com.br
     Se não encontrar correspondência, retorne null.
+
+13. CUSTOS DO EDITAL (alimentam a análise financeira automática):
+
+    13.1 iptu_arrears (IPTU em atraso, BRL):
+         - Procure por: "IPTU em atraso", "débitos de IPTU", "IPTU vencido",
+           "tributos municipais devidos", "IPTU em aberto".
+         - SOMENTE valores explícitos. Se o edital diz apenas
+           "tributos sob responsabilidade do arrematante" SEM valor,
+           retorne null.
+         - NÃO inclua o IPTU do exercício corrente — só os atrasados.
+
+    13.2 condo_arrears (condomínio em atraso, BRL):
+         - Procure por: "condomínio em atraso", "débitos condominiais",
+           "taxas de condomínio em aberto", "cotas condominiais vencidas".
+         - SOMENTE valores explícitos. Sem valor → null.
+
+    13.3 auctioneer_fee_pct (comissão do leiloeiro, FRAÇÃO DECIMAL):
+         - 0.05 = 5% (padrão histórico do mercado brasileiro).
+         - Em VENDA DIRETA / ONLINE da CAIXA Econômica Federal NÃO
+           há comissão de leiloeiro: retorne 0.0.
+           (Detecte por: domínio venda-imoveis.caixa.gov.br, "Caixa
+            Econômica Federal" como vendedor, "venda direta", "venda online".)
+         - Se o edital cita um percentual diferente (ex.: 6%), devolva
+           a fração correspondente (0.06).
+         - Se nada for dito, retorne null para usarmos o default.
+
+14. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
+    - Imagens no markdown aparecem no formato `![alt](url)` ou em tags HTML
+      `<img src="url">`. Pegue a URL da primeira que SEJA uma fotografia
+      do IMÓVEL (não do leiloeiro).
+    - REJEITE imediatamente:
+        * Logos do leiloeiro (URLs com 'logo', 'brand', 'header', 'footer',
+          ou no domínio raiz como /static/logo.png).
+        * Ícones de UI (favicons, sprites, SVG inline, set/icons, social).
+        * Banners e ads.
+        * Mapas estáticos (maps.google, mapbox, staticmap).
+        * Imagens muito pequenas (sufixos 'thumb', 'mini', '16x16', '32x32',
+          '50x50', '64x64' são placeholders).
+        * Fotografias de OUTROS imóveis (ex.: "outros lotes" ou "veja também").
+    - PREFIRA URLs que indiquem foto do anúncio:
+        * Path com 'imovel', 'lote', 'foto', 'image', 'galeria', 'media'.
+        * Sufixos de tamanho: 'large', 'big', 'g', '1280', '1920', 'hd'.
+        * CDNs comuns de imobiliárias (resizer.glbimg, viva-storage,
+          akamai, cloudfront).
+        * Extensões: .jpg, .jpeg, .png, .webp.
+    - A URL deve ser ABSOLUTA (começar com http:// ou https://).
+      Se vier relativa no markdown ('/media/foo.jpg'), NÃO transforme — devolva null.
+    - Se NENHUMA imagem identificável for encontrada, devolva null. NUNCA invente URL.
 """
 
 EXTRACTION_USER_TEMPLATE = """\

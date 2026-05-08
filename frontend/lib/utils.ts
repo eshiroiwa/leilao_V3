@@ -16,6 +16,29 @@ export function formatBRL(value: number | null | undefined): string {
   }).format(value);
 }
 
+/** Formata número como BRL preservando os centavos. */
+export function formatBRLDecimals(
+  value: number | null | undefined,
+  digits = 2,
+): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+/** Formata fração (0.40) como porcentagem ("40%"). */
+export function formatPct(
+  value: number | null | undefined,
+  digits = 1,
+): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
 /** Formata data ISO em pt-BR (data + hora curtas). */
 export function formatDateTimeBR(iso: string | null | undefined): string {
   if (!iso) return "—";

@@ -164,3 +164,63 @@ def sanitize_neighborhood(value: str | None) -> str | None:
         return None
 
     return _smart_title(cleaned)
+
+
+# =============================================================================
+# Validador de URL de imagem
+# =============================================================================
+# Padrões que claramente NÃO são fotografias do imóvel — descartamos mesmo
+# se o LLM passar.
+_IMAGE_REJECT_KEYWORDS = (
+    "logo",
+    "favicon",
+    "sprite",
+    "icon-",
+    "/icon/",
+    "/icons/",
+    "social",
+    "/banner",
+    "/ads/",
+    "staticmap",
+    "googleusercontent.com/maps",
+    "/captcha",
+)
+# Sufixos de tamanho que indicam thumbnail (não usar como hero).
+_IMAGE_THUMB_HINTS = ("thumb", "/thumbs/", "_mini", "16x16", "32x32", "50x50", "64x64")
+_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def sanitize_image_url(value: str | None) -> str | None:
+    """Aceita uma URL de imagem candidata e devolve a versão limpa, ou ``None``
+    se for inválida/suspeita.
+
+    Critérios:
+      * Deve ser absoluta (http:// ou https://).
+      * Não deve casar com keywords de logo, ícone, mapa estático, etc.
+      * Não deve ser thumbnail óbvio.
+      * Caso a URL não tenha extensão de imagem reconhecida, ainda aceitamos
+        — alguns CDNs servem via parâmetros de query (ex.: imgix). Mas se
+        tem extensão, ela precisa ser de imagem.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url:
+        return None
+
+    lower = url.lower()
+    if not (lower.startswith("http://") or lower.startswith("https://")):
+        return None
+    if any(k in lower for k in _IMAGE_REJECT_KEYWORDS):
+        return None
+    if any(k in lower for k in _IMAGE_THUMB_HINTS):
+        return None
+
+    # Se tem extensão explícita, ela precisa ser de imagem.
+    has_ext = "." in lower.rsplit("/", 1)[-1].split("?", 1)[0]
+    if has_ext:
+        path = lower.split("?", 1)[0]
+        if not any(path.endswith(ext) for ext in _IMAGE_EXTENSIONS):
+            return None
+
+    return url

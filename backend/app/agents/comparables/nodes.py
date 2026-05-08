@@ -327,13 +327,15 @@ def node_fetch_candidates(state: ComparablesState) -> dict[str, Any]:
 # é o caminho principal na prática.
 # ---------------------------------------------------------------------------
 def _synthetic_listing_url(parent_url: str, idx: int, raw: dict[str, Any]) -> str:
-    """Gera uma URL única para cada item extraído de uma página de busca.
+    """Gera uma URL única para um item de página de busca quando o LLM NÃO
+    conseguiu extrair a URL real do anúncio individual.
 
-    Como não temos a URL do anúncio individual, usamos a URL da página-pai
-    + um fragmento determinístico baseado no conteúdo. Isso garante:
-      - dedupe correto no upsert (UNIQUE(source_url) na tabela listings);
-      - rastreabilidade (a URL-pai está visível);
-      - estabilidade entre runs (re-extrair o mesmo card gera o mesmo id).
+    Usado APENAS como fallback. Quando o anunciante incluiu o link direto
+    do anúncio no markdown (padrão "[Contatar](.../imovel/...-id-N/)"),
+    preferimos esse link — fica clicável para o usuário no frontend.
+
+    Estabilidade: o hash inclui preço/área/rua/título → re-extrair o mesmo
+    card gera o mesmo id ⇒ upsert com `UNIQUE(source_url)` deduplica.
     """
     sig_parts = [
         str(raw.get("listed_price") or ""),
@@ -346,6 +348,49 @@ def _synthetic_listing_url(parent_url: str, idx: int, raw: dict[str, Any]) -> st
     sig = hashlib.sha1("|".join(sig_parts).encode("utf-8")).hexdigest()[:10]
     sep = "&" if "?" in parent_url else "#"
     return f"{parent_url.rstrip('/')}{sep}item={sig}"
+
+
+def _resolve_listing_url(
+    *, raw: dict[str, Any], parent_url: str, idx: int
+) -> tuple[str, bool]:
+    """Decide a `source_url` final do listing extraído de uma página de busca.
+
+    Preferência: usar a URL real que o LLM achou no markdown (campo
+    ``raw.source_url``), validada:
+      * deve ser absoluta http(s);
+      * deve casar com algum `SourceAdapter` conhecido;
+      * deve ser um anúncio individual (`is_listing_url`);
+      * HOST precisa coincidir EXATAMENTE com o do `parent_url`
+        (anti-alucinação: evita "scrapeei vivareal e o LLM devolveu link
+        do zap"; embora ambos sejam do mesmo grupo, o card real só
+        aponta para o portal de origem).
+
+    Se qualquer validação falhar, cai no `_synthetic_listing_url` (hash).
+    Devolve `(url, is_real)` — o flag é só para logging/diagnóstico.
+    """
+    raw_url = (raw.get("source_url") or "").strip()
+    if not raw_url:
+        return _synthetic_listing_url(parent_url, idx, raw), False
+
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        return _synthetic_listing_url(parent_url, idx, raw), False
+
+    adapter = find_adapter(raw_url)
+    if adapter is None or not adapter.is_listing_url(raw_url):
+        return _synthetic_listing_url(parent_url, idx, raw), False
+
+    if _normalize_host(raw_url) != _normalize_host(parent_url):
+        return _synthetic_listing_url(parent_url, idx, raw), False
+
+    return adapter.canonicalize_url(raw_url), True
+
+
+def _normalize_host(url: str) -> str:
+    """Host em lowercase, sem 'www.', usado para comparação exata."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).netloc or "").lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 def node_extract_listings(state: ComparablesState) -> dict[str, Any]:
@@ -401,16 +446,26 @@ def node_extract_listings(state: ComparablesState) -> dict[str, Any]:
                 logger.warning("cma.extract.batch.fail", url=url, error=str(exc))
                 return [], {"kind": "batch_fail", "url": url}
             out_items: list[dict[str, Any]] = []
+            n_real_url = 0
             for idx, sub in enumerate(batch.listings):
                 if sub.listed_price is None or sub.area_total_m2 is None:
                     continue
-                synth_url = _synthetic_listing_url(url, idx, sub.model_dump())
+                raw_dump = sub.model_dump()
+                resolved_url, is_real = _resolve_listing_url(
+                    raw=raw_dump, parent_url=url, idx=idx
+                )
+                if is_real:
+                    n_real_url += 1
+                # Sobrescreve para ficar consistente entre `source_url` do
+                # objeto extracted e o `raw_extraction.source_url` salvo
+                # no banco (assim o cache também já vê a URL real).
+                raw_dump["source_url"] = resolved_url
                 out_items.append(
                     {
-                        "source_url": synth_url,
+                        "source_url": resolved_url,
                         "parent_url": url,
                         "from_cache": False,
-                        "raw": sub.model_dump(),
+                        "raw": raw_dump,
                         "markdown": None,
                     }
                 )
@@ -419,6 +474,7 @@ def node_extract_listings(state: ComparablesState) -> dict[str, Any]:
                 "url": url,
                 "n_items": len(batch.listings),
                 "n_kept": len(out_items),
+                "n_real_url": n_real_url,
             }
 
         # Single (anúncio individual)
@@ -455,6 +511,7 @@ def node_extract_listings(state: ComparablesState) -> dict[str, Any]:
                         url=meta["url"],
                         n_items=meta["n_items"],
                         n_kept=meta["n_kept"],
+                        n_real_url=meta.get("n_real_url"),
                     )
 
     out: dict[str, Any] = {"extracted_listings": extracted}
@@ -546,7 +603,35 @@ def node_enrich_geo(state: ComparablesState) -> dict[str, Any]:
             continue
         enriched.append(row)
 
-    return {"enriched_listings": enriched}
+    # Deduplica por listing.id (PK no banco). O mesmo anúncio pode aparecer
+    # em duas páginas de busca diferentes (mesma URL real) — o `upsert_listing`
+    # com `on_conflict=source_url` resolve para a MESMA row, e dois entries
+    # apontando para o mesmo id quebrariam a PK composta de
+    # `valuation_comparables (valuation_id, listing_id)` no `node_persist`.
+    # Mantemos a primeira ocorrência (ordem de extração).
+    seen_ids: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    n_dups = 0
+    for row in enriched:
+        rid = row.get("id")
+        if not rid:
+            deduped.append(row)
+            continue
+        if rid in seen_ids:
+            n_dups += 1
+            continue
+        seen_ids.add(rid)
+        deduped.append(row)
+
+    if n_dups:
+        logger.info(
+            "cma.enrich.dedup",
+            n_total=len(enriched),
+            n_unique=len(deduped),
+            n_dups=n_dups,
+        )
+
+    return {"enriched_listings": deduped}
 
 
 def _safe_geocode(gm, raw: dict[str, Any]) -> tuple[float | None, float | None, str | None]:
@@ -875,17 +960,34 @@ def node_persist(state: ComparablesState) -> dict[str, Any]:
     valuation_id = val["id"]
 
     # Join com pesos. Strip dos prefixos privados antes de gravar.
-    rows = []
+    # Defesa em profundidade: dedup por listing_id (a PK composta da tabela
+    # `valuation_comparables` é (valuation_id, listing_id) — duplicatas
+    # quebrariam o INSERT inteiro, perdendo TODOS os comparáveis dessa run).
+    # A dedup primária está em `node_enrich_geo`; aqui é só rede de segurança.
+    seen_listing_ids: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    n_skipped = 0
     for s in scored:
+        lid = s["listing_id"]
+        if lid in seen_listing_ids:
+            n_skipped += 1
+            continue
+        seen_listing_ids.add(lid)
         rows.append(
             {
-                "listing_id": s["listing_id"],
+                "listing_id": lid,
                 "distance_m": s["distance_m"],
                 "similarity_score": s["similarity_score"],
                 "weight": s["weight"],
                 "used": s["used"],
                 "rejection_reason": s["rejection_reason"],
             }
+        )
+    if n_skipped:
+        logger.warning(
+            "cma.persist.dedup_safety_net",
+            n_skipped=n_skipped,
+            valuation_id=valuation_id,
         )
     sb.insert_valuation_comparables(valuation_id, rows)
 

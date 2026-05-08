@@ -390,6 +390,101 @@ def test_scraper_graph_df_route_approximate_classifies_medium(
     assert saved["status"] == "scraped"
 
 
+def test_scraper_graph_persists_image_url_and_drops_logo(
+    fake_extracted: ExtractedAuctionData,
+) -> None:
+    """O persist node aceita URLs de fotos válidas e descarta logos do
+    leiloeiro mesmo se o LLM passar — defesa em profundidade."""
+    from app.agents.scraper.graph import build_scraper_graph
+
+    cases = [
+        ("https://cdn.zuk.com.br/imovel/123/foto-large.jpg",
+         "https://cdn.zuk.com.br/imovel/123/foto-large.jpg"),
+        ("https://www.zuk.com.br/static/logo.png", None),
+    ]
+    for input_url, expected in cases:
+        with_image = fake_extracted.model_copy(update={"image_url": input_url})
+
+        graph = build_scraper_graph()
+        fc = MagicMock()
+        fc.scrape_to_markdown.return_value = {"markdown": "# x", "metadata": {}}
+        gm = MagicMock()
+        gm.validate_address.return_value = _good_validation()
+        gm.geocode.return_value = _good_geocode()
+        gm.extract_lat_lng.return_value = (-23.5505, -46.6333)
+        sb = MagicMock()
+        sb.get_auctioneer_id_by_slug.return_value = "auc-uuid"
+        sb.upsert_property.return_value = {"id": "prop-img"}
+        llm_mock = MagicMock()
+        llm_mock.invoke.return_value = with_image
+        chain_mock = MagicMock()
+        chain_mock.with_structured_output.return_value = llm_mock
+
+        with (
+            patch("app.agents.scraper.nodes.get_firecrawl_service", return_value=fc),
+            patch("app.agents.scraper.nodes.get_google_maps_service", return_value=gm),
+            patch("app.agents.scraper.nodes.get_supabase_service", return_value=sb),
+            patch("app.agents.scraper.nodes.ChatOpenAI", return_value=chain_mock),
+        ):
+            graph.invoke({"url": "https://zuk.com.br/leiloes/imoveis/img"})
+
+        saved = sb.upsert_property.call_args.args[0]
+        # Persist node remove chaves None — então logos/inválidas não chegam
+        # a aparecer no payload (defesa em profundidade).
+        assert saved.get("image_url") == expected, (
+            f"input={input_url} esperado={expected} got={saved.get('image_url')}"
+        )
+
+
+def test_scraper_graph_persists_arrears_and_auctioneer_fee(
+    fake_extracted: ExtractedAuctionData,
+) -> None:
+    """Garante que o persist node propaga os 3 campos novos (alimentos do
+    AGENTE 3) para o payload do `upsert_property`."""
+    from app.agents.scraper.graph import build_scraper_graph
+
+    # Acrescenta os 3 campos sobre o fixture base.
+    fake_extracted = fake_extracted.model_copy(
+        update={
+            "iptu_arrears": 1_234.56,
+            "condo_arrears": 7_890.12,
+            "auctioneer_fee_pct": 0.04,
+        }
+    )
+
+    graph = build_scraper_graph()
+
+    fc = MagicMock()
+    fc.scrape_to_markdown.return_value = {"markdown": "# x", "metadata": {}}
+
+    gm = MagicMock()
+    gm.validate_address.return_value = _good_validation()
+    gm.geocode.return_value = _good_geocode()
+    gm.extract_lat_lng.return_value = (-23.5505, -46.6333)
+
+    sb = MagicMock()
+    sb.get_auctioneer_id_by_slug.return_value = "auc-uuid"
+    sb.upsert_property.return_value = {"id": "prop-arrears"}
+
+    llm_mock = MagicMock()
+    llm_mock.invoke.return_value = fake_extracted
+    chain_mock = MagicMock()
+    chain_mock.with_structured_output.return_value = llm_mock
+
+    with (
+        patch("app.agents.scraper.nodes.get_firecrawl_service", return_value=fc),
+        patch("app.agents.scraper.nodes.get_google_maps_service", return_value=gm),
+        patch("app.agents.scraper.nodes.get_supabase_service", return_value=sb),
+        patch("app.agents.scraper.nodes.ChatOpenAI", return_value=chain_mock),
+    ):
+        graph.invoke({"url": "https://www.zuk.com.br/leiloes/imoveis/arrears"})
+
+    saved = sb.upsert_property.call_args.args[0]
+    assert saved["iptu_arrears"] == 1_234.56
+    assert saved["condo_arrears"] == 7_890.12
+    assert saved["auctioneer_fee_pct"] == 0.04
+
+
 def test_scraper_graph_approximate_without_route_stays_low(
     fake_extracted: ExtractedAuctionData,
 ) -> None:

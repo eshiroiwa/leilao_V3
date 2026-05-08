@@ -19,6 +19,7 @@ from app.agents.scraper.prompts import build_extraction_messages
 from app.agents.scraper.schemas import ExtractedAuctionData
 from app.agents.scraper.state import ScraperState
 from app.agents.scraper.utils import (
+    sanitize_image_url,
     sanitize_neighborhood,
     sanitize_number,
     sanitize_street,
@@ -363,6 +364,7 @@ def node_persist(state: ScraperState) -> dict[str, Any]:
         "title": extracted.title,
         "description": extracted.description,
         "property_type": extracted.property_type,
+        "image_url": sanitize_image_url(extracted.image_url),
         # endereço (preferindo o normalizado; fallback no extraído)
         "address_full": normalized.get("formatted") or addr.full_address,
         "street": normalized.get("street") or addr.street,
@@ -388,6 +390,10 @@ def node_persist(state: ScraperState) -> dict[str, Any]:
         "minimum_bid_first": extracted.minimum_bid_first,
         "minimum_bid_second": extracted.minimum_bid_second,
         "current_bid": extracted.current_bid,
+        # custos do edital (alimentam o Agente 3)
+        "iptu_arrears": extracted.iptu_arrears,
+        "condo_arrears": extracted.condo_arrears,
+        "auctioneer_fee_pct": extracted.auctioneer_fee_pct,
         # datas
         "first_auction_at": (
             extracted.first_auction_at.isoformat() if extracted.first_auction_at else None

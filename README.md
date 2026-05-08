@@ -101,6 +101,12 @@ No SQL Editor do Supabase, execute o conteúdo de
 [`backend/app/db/schema.sql`](backend/app/db/schema.sql). Ele habilita PostGIS e cria
 todas as tabelas, índices e triggers.
 
+> **Bancos já existentes:** rode também as migrations incrementais em
+> [`backend/app/db/migrations/`](backend/app/db/migrations/) que ainda não
+> tenham sido aplicadas (ex.: `004_listings_external_id_unique.sql` para
+> dedup de anúncios por `(source, external_id)` — limpa duplicatas
+> existentes e cria o índice único parcial).
+
 ### 3. Instalação (uma vez só)
 
 ```bash

@@ -95,6 +95,7 @@ export type Property = {
   title: string | null;
   description: string | null;
   property_type: string | null;
+  image_url: string | null;
   address_full: string | null;
   street: string | null;
   number: string | null;
@@ -127,9 +128,122 @@ export type Property = {
   second_auction_at: string | null;
   legal_status: string | null;
   occupancy_status: string | null;
+  // Custos do edital — alimentam o AGENTE 3
+  iptu_arrears: number | null;
+  condo_arrears: number | null;
+  auctioneer_fee_pct: number | null;
   status: string;
   created_at: string;
   updated_at: string;
+};
+
+// =============================================================================
+// AGENTE 3 — Análise de Oportunidade
+// =============================================================================
+export type BuyerType = "PF" | "PJ";
+
+export type RenovationLevel =
+  | "none"
+  | "basic"
+  | "moderate"
+  | "full"
+  | "premium";
+
+export type Verdict =
+  | "BOA_OPORTUNIDADE"
+  | "BOA_COM_RESSALVAS"
+  | "NEUTRO"
+  | "INVIAVEL"
+  | "INDETERMINADO";
+
+export type OpportunityInput = {
+  buyer_type: BuyerType;
+  target_net_roi_pct: number;
+  renovation_level: RenovationLevel;
+  bid_amount: number;
+  other_costs: number;
+  iptu_arrears: number;
+  condo_arrears: number;
+  itbi_pct_override?: number | null;
+  registration_pct_override?: number | null;
+  auctioneer_fee_pct_override?: number | null;
+  sale_price_override?: number | null;
+};
+
+export type OpportunityScenario = {
+  label: "pessimista" | "realista" | "otimista";
+  sale_price: number;
+  bid: number;
+  auctioneer_fee: number;
+  itbi: number;
+  registration: number;
+  iptu_arrears: number;
+  condo_arrears: number;
+  renovation_cost: number;
+  other_costs: number;
+  total_acquisition_cost: number;
+  realtor_fee: number;
+  gross_profit: number;
+  income_tax: number;
+  net_profit: number;
+  gross_roi_pct: number;
+  net_roi_pct: number;
+};
+
+export type OpportunityAssumptions = {
+  itbi_pct: number;
+  itbi_source: "city_table" | "default" | "override";
+  registration_pct: number;
+  auctioneer_fee_pct: number;
+  auctioneer_fee_source:
+    | "edital"
+    | "caixa_zero"
+    | "default"
+    | "override";
+  realtor_fee_pct: number;
+  income_tax_pct: number;
+  income_tax_basis: "gross_profit" | "sale_price";
+  renovation_per_m2: number;
+};
+
+export type OpportunityResult = {
+  input: OpportunityInput;
+  pessimista: OpportunityScenario;
+  realista: OpportunityScenario;
+  otimista: OpportunityScenario;
+  max_bid_for_target: number | null;
+  verdict: Verdict;
+  /** Verdict APENAS pelo ROI realista (antes dos downgrades). */
+  verdict_base: Verdict;
+  /** Frases curtas que rebaixaram o verdict do base para o final. */
+  verdict_factors: string[];
+  warnings: string[];
+  assumptions: OpportunityAssumptions;
+};
+
+export type OpportunityAnalysisRow = {
+  id: string;
+  property_id: string;
+  valuation_id: string | null;
+  buyer_type: BuyerType;
+  target_net_roi_pct: number;
+  renovation_level: RenovationLevel;
+  bid_amount: number;
+  other_costs: number;
+  iptu_arrears: number;
+  condo_arrears: number;
+  scenarios: {
+    pessimista: OpportunityScenario;
+    realista: OpportunityScenario;
+    otimista: OpportunityScenario;
+  };
+  max_bid_for_target: number | null;
+  verdict: Verdict;
+  warnings: string[];
+  assumptions: OpportunityAssumptions;
+  verdict_base?: Verdict;
+  verdict_factors?: string[];
+  created_at: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -195,5 +309,28 @@ export const api = {
   getValuationDetail: (propertyId: string, valuationId: string) =>
     request<ValuationDetail>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/valuations/${encodeURIComponent(valuationId)}`,
+    ),
+
+  // ===== AGENTE 3 (Oportunidade) =====
+  previewOpportunity: (propertyId: string, payload: OpportunityInput) =>
+    request<OpportunityResult>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses/preview`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  saveOpportunity: (propertyId: string, payload: OpportunityInput) =>
+    request<{ id: string; result: OpportunityResult }>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  listOpportunities: (propertyId: string) =>
+    request<OpportunityAnalysisRow[]>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses`,
+    ),
+
+  getOpportunity: (propertyId: string, analysisId: string) =>
+    request<OpportunityAnalysisRow>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses/${encodeURIComponent(analysisId)}`,
     ),
 };

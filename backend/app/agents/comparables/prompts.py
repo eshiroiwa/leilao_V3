@@ -77,7 +77,18 @@ REGRAS OBRIGATÓRIAS:
 4. Se um campo de um item não estiver claro, use null. NUNCA invente.
 5. Ignore cards de "patrocinado" sem preço/área concretos.
 6. Se a página tiver MAIS de 25 imóveis listados, devolva os primeiros 25.
-7. Demais regras de formatação (preço, área, UF, CEP, property_type,
+7. ⚠ source_url: para CADA anúncio, procure o LINK direto da página
+   individual do imóvel. Padrões de onde o link costuma aparecer no
+   markdown do VivaReal/ZAP:
+     • Logo APÓS o botão "[Contatar]" do card.
+       Ex.: `[Contatar](https://...) [Veja mais](https://www.vivareal.com.br/imovel/apto-2-quartos-id-2748234907/)`
+     • Em links de título do card:
+       `[Apartamento 60 m² ...](https://www.vivareal.com.br/imovel/...-id-N/)`
+     • Em "Veja mais detalhes", "Ver imóvel", "Detalhes" etc.
+   A URL VÁLIDA SEMPRE termina com `-id-{NÚMERO}/` ou `-id-{NÚMERO}`.
+   Se NÃO houver link específico daquele anúncio, devolva `source_url=null`
+   — NUNCA repita a URL da página de busca, NUNCA invente.
+8. Demais regras de formatação (preço, área, UF, CEP, property_type,
    neighborhood, condo_name, amenities, photos_count, advertiser_type)
    seguem EXATAMENTE as mesmas do prompt de extração individual:
 

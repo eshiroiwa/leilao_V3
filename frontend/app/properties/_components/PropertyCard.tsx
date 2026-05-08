@@ -1,13 +1,28 @@
 "use client";
 
-import { ExternalLink, MapPin, MapPinOff, Ruler, BedDouble, Bath } from "lucide-react";
+import {
+  Bath,
+  BedDouble,
+  ExternalLink,
+  MapPin,
+  MapPinOff,
+  Ruler,
+} from "lucide-react";
 
+import { PropertyImage } from "@/components/PropertyImage";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import type { Property } from "@/lib/api";
 import { cn, formatBRL, formatDateTimeBR } from "@/lib/utils";
 
 import { DeletePropertyButton } from "./DeletePropertyButton";
+import { OpportunityButton } from "./OpportunityButton";
 import { ValuateButton } from "./ValuateButton";
 
 const confidenceVariant: Record<
@@ -63,11 +78,17 @@ export function PropertyCard({
           : undefined
       }
       className={cn(
-        "flex h-full flex-col transition-all",
+        "flex h-full flex-col overflow-hidden transition-all",
         interactive && "cursor-pointer hover:border-primary/40 hover:shadow-md",
         selected && "border-primary ring-2 ring-primary/40 shadow-md"
       )}
     >
+      <PropertyImage
+        src={property.image_url}
+        alt={property.title ?? "Foto do imóvel"}
+        className="[&_img]:transition-transform [&_img]:duration-300 [&_img:hover]:scale-[1.02]"
+      />
+
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
@@ -156,8 +177,9 @@ export function PropertyCard({
           </a>
         </div>
 
-        <div className="flex justify-end pt-2">
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
           <ValuateButton propertyId={property.id} variant="compact" />
+          <OpportunityButton propertyId={property.id} variant="compact" />
         </div>
       </CardContent>
     </Card>

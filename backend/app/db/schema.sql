@@ -63,6 +63,7 @@ create table if not exists public.properties (
   title                    text,
   description              text,
   property_type            text,                                    -- apartamento, casa, terreno, comercial...
+  image_url                text,                                    -- 1ª foto do imóvel (extraída pelo Agente 1)
 
   -- Endereço normalizado (Google Address Validation)
   address_full             text,                                    -- linha completa formatada
@@ -102,6 +103,18 @@ create table if not exists public.properties (
   minimum_bid_second       numeric(14,2),                           -- 2ª praça
   current_bid              numeric(14,2),
   currency                 char(3) default 'BRL',
+
+  -- Custos declarados no edital (extraídos pelo Agente 1 quando disponíveis;
+  -- usados pelo Agente 3 com fallback para input manual no UI).
+  iptu_arrears             numeric(14,2),                           -- IPTU em atraso, BRL
+  condo_arrears            numeric(14,2),                           -- condomínio em atraso, BRL
+  auctioneer_fee_pct       numeric(5,4),                            -- comissão leiloeiro, 0..1
+
+  -- Custos do edital (extraídos pelo Agente 1 quando disponíveis;
+  -- alimentam a análise financeira do Agente 3).
+  iptu_arrears             numeric(14,2),                           -- IPTU atrasado (BRL)
+  condo_arrears            numeric(14,2),                           -- condomínio atrasado (BRL)
+  auctioneer_fee_pct       numeric(6,4),                            -- 0.05 = 5% (NULL = default)
 
   -- Datas do leilão
   first_auction_at         timestamptz,
@@ -214,6 +227,12 @@ create index if not exists idx_listings_city_neighborhood on public.listings(cit
 create index if not exists idx_listings_scraped_at        on public.listings(scraped_at desc);
 create index if not exists idx_listings_condo_name        on public.listings(condo_name) where condo_name is not null;
 create index if not exists idx_listings_lat_lng           on public.listings(latitude, longitude);
+-- Dedup canônica por anúncio: (source, external_id) é o id real do
+-- anúncio no portal. Quando ele existe, NUNCA permitimos duas rows.
+-- (PARCIAL — quando external_id é NULL, só o UNIQUE em source_url protege.)
+create unique index if not exists uq_listings_source_external_id
+  on public.listings (source, external_id)
+  where external_id is not null;
 
 -- valuations → resultado de cada CMA
 create table if not exists public.valuations (
@@ -257,6 +276,42 @@ create table if not exists public.valuation_comparables (
 create index if not exists idx_valcomp_listing on public.valuation_comparables(listing_id);
 
 -- =============================================================================
+-- AGENTE 3 — opportunity_analyses
+-- =============================================================================
+create table if not exists public.opportunity_analyses (
+  id                  uuid primary key default gen_random_uuid(),
+
+  property_id         uuid not null references public.properties(id)  on delete cascade,
+  valuation_id        uuid          references public.valuations(id)  on delete set null,
+  agent_run_id        uuid          references public.agent_runs(id)  on delete set null,
+
+  buyer_type          text not null check (buyer_type in ('PF','PJ')),
+  target_net_roi_pct  numeric(5,4) not null,
+  renovation_level    text not null check (renovation_level in
+                       ('none','basic','moderate','full','premium')),
+  bid_amount          numeric(14,2) not null,
+  other_costs         numeric(14,2) not null default 0,
+  iptu_arrears        numeric(14,2) not null default 0,
+  condo_arrears       numeric(14,2) not null default 0,
+
+  scenarios           jsonb not null,
+  max_bid_for_target  numeric(14,2),
+
+  verdict             text not null check (verdict in
+                       ('BOA_OPORTUNIDADE','BOA_COM_RESSALVAS','NEUTRO',
+                        'INVIAVEL','INDETERMINADO')),
+  warnings            jsonb,
+  assumptions         jsonb not null,
+
+  created_at          timestamptz not null default now()
+);
+
+create index if not exists idx_opp_analyses_property
+  on public.opportunity_analyses (property_id, created_at desc);
+create index if not exists idx_opp_analyses_verdict
+  on public.opportunity_analyses (verdict);
+
+-- =============================================================================
 -- Row Level Security (placeholder — refine conforme regras de auth do projeto)
 -- =============================================================================
 alter table public.auctioneers           enable row level security;
@@ -265,6 +320,7 @@ alter table public.agent_runs            enable row level security;
 alter table public.listings              enable row level security;
 alter table public.valuations            enable row level security;
 alter table public.valuation_comparables enable row level security;
+alter table public.opportunity_analyses  enable row level security;
 
 -- Política de leitura pública (ajuste conforme necessidade real)
 drop policy if exists "public read auctioneers" on public.auctioneers;
@@ -283,5 +339,8 @@ create policy "public read valuations" on public.valuations for select using (tr
 
 drop policy if exists "public read valuation_comparables" on public.valuation_comparables;
 create policy "public read valuation_comparables" on public.valuation_comparables for select using (true);
+
+drop policy if exists "public read opportunity_analyses" on public.opportunity_analyses;
+create policy "public read opportunity_analyses" on public.opportunity_analyses for select using (true);
 
 -- Escritas só via service_role (a API roda como service_role no backend).

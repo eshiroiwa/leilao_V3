@@ -172,8 +172,83 @@ class SupabaseService:
         return res.data or []
 
     def upsert_listing(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Upsert por ``source_url``. ``location`` em EWKT como em properties."""
-        logger.info("supabase.listing.upsert", source_url=payload.get("source_url"))
+        """Upsert idempotente de um listing.
+
+        Estratégia de dedup (em ordem de preferência):
+
+        1. ``(source, external_id)`` — quando o anúncio tem id canônico no
+           portal (ex.: ``id-12345`` no path do VivaReal/ZAP). Esse é o
+           caso PRINCIPAL: previne duplicatas mesmo quando o ``source_url``
+           muda entre runs (synthetic → URL real, canonicalização, etc.).
+           Faz SELECT para achar a row existente; se achar, faz UPDATE; se
+           não, faz INSERT.
+
+        2. ``source_url`` — fallback para casos sem ``external_id``
+           (geralmente cards sem URL real, com source_url synthetic).
+           Usa ``upsert(on_conflict="source_url")`` direto.
+
+        Ambos os caminhos garantem que o backend é o único que decide
+        a granularidade de "anúncio" — o índice único parcial criado na
+        migration 004 protege a tabela mesmo se a aplicação errar.
+        """
+        source = payload.get("source")
+        external_id = payload.get("external_id")
+        source_url = payload.get("source_url")
+        logger.info(
+            "supabase.listing.upsert",
+            source_url=source_url,
+            external_id=external_id,
+            source=source,
+        )
+
+        # ---- Caminho 1: dedup por (source, external_id) -------------------
+        if source and external_id:
+            try:
+                existing = (
+                    self._client.table("listings")
+                    .select("id, source_url")
+                    .eq("source", source)
+                    .eq("external_id", external_id)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception as exc:
+                raise SupabaseError(
+                    f"Falha ao buscar listing existente: {exc}"
+                ) from exc
+
+            rows_existing = existing.data or []
+            if rows_existing:
+                row_id = rows_existing[0]["id"]
+                old_url = rows_existing[0].get("source_url")
+                # Atualiza tudo (inclusive source_url, para "promover" um
+                # synthetic antigo à URL real quando o novo run achar o link).
+                update_payload = {k: v for k, v in payload.items() if k != "id"}
+                try:
+                    res = (
+                        self._client.table("listings")
+                        .update(update_payload)
+                        .eq("id", row_id)
+                        .execute()
+                    )
+                except Exception as exc:
+                    raise SupabaseError(
+                        f"Falha ao atualizar listing existente: {exc}"
+                    ) from exc
+                rows = res.data or []
+                if not rows:
+                    raise SupabaseError("Update de listing não retornou registros.")
+                if old_url and old_url != source_url:
+                    logger.info(
+                        "supabase.listing.url_promoted",
+                        external_id=external_id,
+                        old_url=old_url,
+                        new_url=source_url,
+                    )
+                return rows[0]
+            # Não achou — cai no caminho 2 (INSERT via upsert por source_url).
+
+        # ---- Caminho 2: upsert por source_url -----------------------------
         try:
             res = (
                 self._client.table("listings")
@@ -266,6 +341,91 @@ class SupabaseService:
             ) from exc
         valuation["comparables"] = comp_res.data or []
         return valuation
+
+    def get_latest_valuation_for_property(
+        self, property_id: str
+    ) -> dict[str, Any] | None:
+        """Atalho: a valuation mais recente associada a um property_id."""
+        try:
+            res = (
+                self._client.table("valuations")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao consultar última valuation: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
+    # Opportunity analyses (AGENTE 3)
+    # ------------------------------------------------------------------ #
+    def insert_opportunity_analysis(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Insere uma análise de oportunidade. Retorna a row criada."""
+        logger.info(
+            "supabase.opportunity.insert",
+            property_id=payload.get("property_id"),
+            verdict=payload.get("verdict"),
+        )
+        try:
+            res = (
+                self._client.table("opportunity_analyses")
+                .insert(payload)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao inserir opportunity_analysis: {exc}"
+            ) from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError(
+                "Insert de opportunity_analysis não retornou registros."
+            )
+        return rows[0]
+
+    def list_opportunity_analyses(
+        self, property_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        try:
+            res = (
+                self._client.table("opportunity_analyses")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar opportunity_analyses: {exc}"
+            ) from exc
+        return res.data or []
+
+    def get_opportunity_analysis(
+        self, analysis_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("opportunity_analyses")
+                .select("*")
+                .eq("id", analysis_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao consultar opportunity_analysis {analysis_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
 
 
 @lru_cache(maxsize=1)

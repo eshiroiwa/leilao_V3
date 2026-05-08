@@ -28,6 +28,18 @@ class ExtractedListing(BaseModel):
     # Identificação
     title: str | None = Field(default=None)
     property_type: PropertyType | None = Field(default=None)
+    source_url: str | None = Field(
+        default=None,
+        description=(
+            "URL ABSOLUTA do anúncio individual (não da página de busca). "
+            "No VivaReal/ZAP costuma aparecer DEPOIS do botão '[Contatar]' "
+            "ou em links de detalhes/título do card. Deve começar com "
+            "'https://www.vivareal.com.br/imovel/...' ou "
+            "'https://www.zapimoveis.com.br/imovel/...'. Se não houver "
+            "link específico desse anúncio, devolva null — NUNCA invente "
+            "URL nem repita a URL da página de busca."
+        ),
+    )
     condo_name: str | None = Field(
         default=None,
         description=(

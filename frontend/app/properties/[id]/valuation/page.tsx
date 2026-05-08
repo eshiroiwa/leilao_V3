@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { Badge } from "@/components/ui/badge";
+import { PropertyImage } from "@/components/PropertyImage";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type Property, type Valuation } from "@/lib/api";
 
@@ -52,22 +52,29 @@ export default async function PropertyValuationPage({
         <CardHeader>
           <CardTitle className="text-base">Imóvel</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-4">
-          <Field label="Tipo" value={property.property_type} capitalize />
-          <Field label="Área total" value={property.area_total_m2 ? `${property.area_total_m2} m²` : null} />
-          <Field label="Quartos" value={property.bedrooms} />
-          <Field label="Vagas" value={property.parking_spaces} />
-          <Field label="Endereço" value={property.address_full} className="col-span-full" />
-          <Field
-            label="Avaliação (leiloeiro)"
-            value={fmtBRL(property.appraisal_value)}
+        <CardContent className="grid grid-cols-1 gap-6 md:grid-cols-[280px_1fr]">
+          <PropertyImage
+            src={property.image_url}
+            alt={property.title ?? "Foto do imóvel"}
+            className="rounded-md border"
           />
-          <Field label="1ª praça" value={fmtBRL(property.minimum_bid_first)} />
-          <Field label="2ª praça" value={fmtBRL(property.minimum_bid_second)} />
-          <Field
-            label="Geo"
-            value={property.geocoding_confidence ?? "—"}
-          />
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-4">
+            <Field label="Tipo" value={property.property_type} capitalize />
+            <Field label="Área total" value={property.area_total_m2 ? `${property.area_total_m2} m²` : null} />
+            <Field label="Quartos" value={property.bedrooms} />
+            <Field label="Vagas" value={property.parking_spaces} />
+            <Field label="Endereço" value={property.address_full} className="col-span-full" />
+            <Field
+              label="Avaliação (leiloeiro)"
+              value={fmtBRL(property.appraisal_value)}
+            />
+            <Field label="1ª praça" value={fmtBRL(property.minimum_bid_first)} />
+            <Field label="2ª praça" value={fmtBRL(property.minimum_bid_second)} />
+            <Field
+              label="Geo"
+              value={property.geocoding_confidence ?? "—"}
+            />
+          </div>
         </CardContent>
       </Card>
 
