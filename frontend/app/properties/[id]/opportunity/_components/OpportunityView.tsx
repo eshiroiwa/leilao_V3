@@ -27,6 +27,7 @@ import {
 import { formatBRL } from "@/lib/utils";
 
 import { OpportunityForm } from "./OpportunityForm";
+import { ReportButton } from "./ReportButton";
 import { ScenarioCards } from "./ScenarioCards";
 import { VerdictCard } from "./VerdictCard";
 
@@ -208,7 +209,7 @@ export function OpportunityView({
         />
 
         <Card>
-          <CardContent className="space-y-2 pt-6">
+          <CardContent className="space-y-3 pt-6">
             <Button
               className="w-full"
               onClick={handleSave}
@@ -224,6 +225,13 @@ export function OpportunityView({
               instantânea. Ao salvar, o servidor recalcula com a versão
               autoritativa e regista a análise para auditoria.
             </p>
+
+            <ReportButton
+              property={property}
+              result={result}
+              valuationId={valuation?.id ?? null}
+              className="border-t pt-3"
+            />
           </CardContent>
         </Card>
       </aside>
