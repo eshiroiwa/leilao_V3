@@ -158,7 +158,15 @@ async def get_dashboard(
     )[:upcoming_limit]
 
     # ------------------------------------------------------------------ #
-    # Top oportunidades — ordena por (verdict_rank asc, ROI realista desc)
+    # Top oportunidades — ordena por (verdict_rank asc, ROI realista desc).
+    #
+    # Mostramos APENAS verdicts "bons" (``_GOOD_VERDICTS``) na vitrine —
+    # incluir um "INVIAVEL" no Top Ranking confunde o usuário (a métrica
+    # ``totals.good_opportunities`` ao lado já reflete só os bons).
+    #
+    # Quando o filtro ``good_opportunities`` está ativo no painel lateral
+    # do dashboard, o usuário também espera ver só os bons; um empty
+    # state quando não houver nenhum é a UX correta.
     # ------------------------------------------------------------------ #
     candidates: list[dict[str, Any]] = []
     for pid, opp in latest_opp_by_property.items():
@@ -188,7 +196,9 @@ async def get_dashboard(
             -(c["net_roi_pct"] if isinstance(c["net_roi_pct"], int | float) else -1e9),
         )
     )
-    top_opps = candidates[:top_opportunities]
+    top_opps = [c for c in candidates if c["verdict"] in _GOOD_VERDICTS][
+        :top_opportunities
+    ]
 
     # ------------------------------------------------------------------ #
     # Buckets — listas pré-filtradas para alimentar o painel lateral

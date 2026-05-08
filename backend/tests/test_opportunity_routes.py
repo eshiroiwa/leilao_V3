@@ -32,7 +32,7 @@ def mock_supabase(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         "id": PROP_ID,
         "city": "São Paulo",
         "state": "SP",
-        "total_area_m2": 60,
+        "area_total_m2": 60,
         "occupancy_status": "desocupado",
         "has_liens_or_debts": False,
         "auctioneer_fee_pct": None,
@@ -42,11 +42,11 @@ def mock_supabase(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     }
     fake.get_latest_valuation_for_property.return_value = {
         "id": str(uuid4()),
-        "price_low": 350_000,
-        "price_estimated": 400_000,
-        "price_high": 450_000,
+        "price_lower_bound": 350_000,
+        "estimated_price": 400_000,
+        "price_upper_bound": 450_000,
         "confidence": "HIGH",
-        "n_used": 12,
+        "comparables_used": 12,
     }
     fake.insert_opportunity_analysis.side_effect = lambda payload: {
         **payload,

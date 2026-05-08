@@ -13,7 +13,7 @@ def _property_row(**overrides):
         "id": "prop-1",
         "city": "São Paulo",
         "state": "SP",
-        "total_area_m2": 60,
+        "area_total_m2": 60,
         "occupancy_status": "desocupado",
         "has_liens_or_debts": False,
         "auctioneer_fee_pct": None,
@@ -27,11 +27,11 @@ def _property_row(**overrides):
 def _valuation(price_low=350_000, mid=400_000, high=450_000, **overrides):
     base = {
         "id": "val-1",
-        "price_low": price_low,
-        "price_estimated": mid,
-        "price_high": high,
+        "price_lower_bound": price_low,
+        "estimated_price": mid,
+        "price_upper_bound": high,
         "confidence": "HIGH",
-        "n_used": 12,
+        "comparables_used": 12,
     }
     base.update(overrides)
     return base
@@ -113,12 +113,12 @@ def test_run_analysis_renovation_scales_with_area() -> None:
     inp = AnalysisInput(bid_amount=200_000, renovation_level="full")
     r60 = run_analysis(
         inp=inp,
-        property_row=_property_row(total_area_m2=60),
+        property_row=_property_row(area_total_m2=60),
         valuation=_valuation(),
     )
     r120 = run_analysis(
         inp=inp,
-        property_row=_property_row(total_area_m2=120),
+        property_row=_property_row(area_total_m2=120),
         valuation=_valuation(),
     )
     assert r120.realista.renovation_cost > r60.realista.renovation_cost
@@ -153,7 +153,7 @@ def test_run_analysis_warns_about_low_confidence_valuation() -> None:
     result = run_analysis(
         inp=inp,
         property_row=_property_row(),
-        valuation=_valuation(confidence="LOW", n_used=2),
+        valuation=_valuation(confidence="LOW", comparables_used=2),
     )
     assert any("confiança baixa" in w.lower() for w in result.warnings)
 

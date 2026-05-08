@@ -5,8 +5,8 @@ Responsabilidades:
 1. **Carregar contexto**: property + última valuation (CMA) do Supabase.
 2. **Resolver premissas**: ITBI por cidade, comissão do leiloeiro
    (declarada / Caixa / default), R$/m² da reforma escolhida.
-3. **Calcular 3 cenários**: pessimista (price_per_m2_p25 ou price_low),
-   realista (median), otimista (p75 / price_high).
+3. **Calcular 3 cenários**: pessimista (``price_lower_bound``),
+   realista (``estimated_price``), otimista (``price_upper_bound``).
 4. **Resolver lance máximo** para o ROI alvo do usuário.
 5. **Classificar parecer** com warnings.
 6. **(Opcional) Persistir** a análise no Supabase.
@@ -65,28 +65,31 @@ def _scenario_prices_from_valuation(
 ) -> tuple[float, float, float] | None:
     """Extrai (pessimista, realista, otimista) da valuation.
 
+    Os nomes das colunas espelham o schema real da tabela ``valuations``
+    (ver ``backend/app/db/schema.sql``):
+
+      * ``estimated_price``     – preço alvo (mediana ponderada).
+      * ``price_lower_bound``   – limite inferior (p10 do pool de comparáveis).
+      * ``price_upper_bound``   – limite superior (p90 do pool de comparáveis).
+      * ``ppm2_estimated``      – R$/m² mediano (fallback × área).
+
     Estratégia de fallback:
-      1. ``price_low`` / ``price_estimated`` / ``price_high`` se existirem.
-      2. ``price_per_m2_p25 / median / p75`` × área, se existirem.
-      3. ``price_per_m2_estimated`` × ±10%, como último recurso.
+      1. ``price_lower_bound`` / ``estimated_price`` / ``price_upper_bound``
+         se os três existirem e estiverem em ordem.
+      2. ``ppm2_estimated`` × área (±10%), como último recurso intermediário.
+      3. ``estimated_price`` × ±10%, se nada mais estiver disponível.
     """
     if not valuation:
         return None
 
-    low = _safe_float(valuation.get("price_low"))
-    mid = _safe_float(valuation.get("price_estimated"))
-    high = _safe_float(valuation.get("price_high"))
+    low = _safe_float(valuation.get("price_lower_bound"))
+    mid = _safe_float(valuation.get("estimated_price"))
+    high = _safe_float(valuation.get("price_upper_bound"))
     if low and mid and high and low <= mid <= high:
         return low, mid, high
 
     if property_area_m2 and property_area_m2 > 0:
-        p25 = _safe_float(valuation.get("price_per_m2_p25"))
-        med = _safe_float(valuation.get("price_per_m2_median"))
-        p75 = _safe_float(valuation.get("price_per_m2_p75"))
-        if p25 and med and p75:
-            return p25 * property_area_m2, med * property_area_m2, p75 * property_area_m2
-
-        ppm = _safe_float(valuation.get("price_per_m2_estimated"))
+        ppm = _safe_float(valuation.get("ppm2_estimated"))
         if ppm:
             mid_v = ppm * property_area_m2
             return mid_v * 0.9, mid_v, mid_v * 1.1
@@ -184,8 +187,8 @@ def run_analysis(
     # --- 1. Extrai dados do property ----------------------------------
     city = property_row.get("city")
     state = property_row.get("state")
-    area_m2 = _safe_float(property_row.get("total_area_m2")) or _safe_float(
-        property_row.get("private_area_m2")
+    area_m2 = _safe_float(property_row.get("area_total_m2")) or _safe_float(
+        property_row.get("area_built_m2")
     )
     occupancy = property_row.get("occupancy_status")
     declared_fee = _safe_float(property_row.get("auctioneer_fee_pct"))
@@ -292,7 +295,7 @@ def run_analysis(
         occupancy_status=occupancy,
         has_liens_or_debts=bool(property_row.get("has_liens_or_debts")),
         valuation_confidence=(valuation or {}).get("confidence"),
-        n_comparables=(valuation or {}).get("n_used"),
+        n_comparables=(valuation or {}).get("comparables_used"),
         buyer_type=inp.buyer_type,
         pessimista_net_profit=pessimista.net_profit,
         auctioneer_fee_source=auctioneer_fee_source,
