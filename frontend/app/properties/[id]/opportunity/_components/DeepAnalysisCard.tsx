@@ -30,12 +30,12 @@ const SCORE_LABELS = ["—", "muito ruim", "ruim", "neutro", "bom", "excelente"]
 
 function scoreVariant(
   score: number | null | undefined,
-): "success" | "warning" | "destructive" | "secondary" {
+): "success" | "warning" | "danger" | "secondary" {
   if (score == null) return "secondary";
   if (score >= 4) return "success";
   if (score === 3) return "secondary";
   if (score === 2) return "warning";
-  return "destructive";
+  return "danger";
 }
 
 function confidenceLabel(c: DeepConfidence | null | undefined): string {
@@ -188,7 +188,7 @@ export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
 
         {/* Histórico de leilão */}
         {row.prior_auction_count != null && row.prior_auction_count > 0 && (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-900 dark:text-amber-200">
+          <div className="rounded-md border border-warning/30 bg-warning-50 p-2 text-xs text-warning-700">
             <strong>Histórico de leilão:</strong> {row.prior_auction_count}{" "}
             menção(ões) a leilões anteriores deste imóvel.{" "}
             <span className="text-muted-foreground">
@@ -276,9 +276,9 @@ function OutlierTile({
       </div>
       <div className="mt-1">
         {isOutlier ? (
-          <Badge variant="warning">SIM — atípico no bairro</Badge>
+          <Badge variant="warning">atípico no bairro</Badge>
         ) : (
-          <Badge variant="secondary">não — típico</Badge>
+          <Badge variant="success">típico</Badge>
         )}
       </div>
       <div className="mt-1 text-[11px] text-muted-foreground">
@@ -296,7 +296,8 @@ function TrendTile({
   confidence?: DeepConfidence | null;
 }) {
   const Icon = pct != null && pct >= 0 ? TrendingUp : TrendingDown;
-  const color = pct == null ? "" : pct >= 0 ? "text-emerald-600" : "text-destructive";
+  const color =
+    pct == null ? "" : pct >= 0 ? "text-success-700" : "text-danger-700";
   return (
     <div className="rounded-md border bg-card p-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -351,8 +352,8 @@ function FlagsList({
 }) {
   const cls =
     tone === "success"
-      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
-      : "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200";
+      ? "border-success/30 bg-success-50 text-success-700"
+      : "border-warning/30 bg-warning-50 text-warning-700";
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -400,10 +401,10 @@ function UrbanRiskRow({ risk }: { risk: UrbanRiskItem }) {
 
 function scoreColor(score: number | null | undefined): string {
   if (score == null) return "";
-  if (score >= 4) return "text-emerald-600 dark:text-emerald-400";
+  if (score >= 4) return "text-success-700";
   if (score === 3) return "";
-  if (score === 2) return "text-amber-600 dark:text-amber-400";
-  return "text-destructive";
+  if (score === 2) return "text-warning-700";
+  return "text-danger-700";
 }
 
 // Indicar uso para mantermos o lint feliz e suportar formatPct se necessário no futuro

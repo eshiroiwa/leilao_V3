@@ -92,9 +92,9 @@ function ScrapeResult({ result }: { result: ScraperRunResponse }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             {ok ? (
-              <CheckCircle2 className="size-5 text-emerald-600" />
+              <CheckCircle2 className="size-5 text-success-700" />
             ) : (
-              <AlertTriangle className="size-5 text-amber-600" />
+              <AlertTriangle className="size-5 text-warning-700" />
             )}
             <CardTitle>{ok ? "Sucesso" : "Concluído com erros"}</CardTitle>
           </div>
@@ -131,7 +131,7 @@ function ScrapeResult({ result }: { result: ScraperRunResponse }) {
 
         {result.warnings.length > 0 && (
           <div>
-            <div className="mb-1 text-xs font-semibold uppercase text-amber-700">Avisos</div>
+            <div className="mb-1 text-xs font-semibold uppercase text-warning-700">Avisos</div>
             <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
               {result.warnings.map((w, i) => (
                 <li key={i}>{w}</li>

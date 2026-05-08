@@ -42,24 +42,32 @@ export function PropertyImage({
   return (
     <div
       className={cn(
-        "relative w-full overflow-hidden bg-muted",
+        "relative w-full overflow-hidden bg-gradient-to-br from-muted to-muted/60",
         aspect,
         className,
       )}
     >
       {show ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={src!}
-          alt={alt}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          onError={() => setBroken(true)}
-          className="h-full w-full object-cover"
-        />
+        <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src!}
+            alt={alt}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setBroken(true)}
+            className="h-full w-full object-cover"
+          />
+          {/* gradiente sutil para legibilidade de chips/badges sobrepostos */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/30 to-transparent"
+          />
+        </>
       ) : (
-        <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted-foreground">
           <ImageOff className={iconSize} />
+          <span className="text-[11px] uppercase tracking-wider">sem foto</span>
         </div>
       )}
     </div>

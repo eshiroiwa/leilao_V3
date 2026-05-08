@@ -94,7 +94,7 @@ export function OpportunityForm({
             ))}
           </div>
           {input.buyer_type === "PJ" && (
-            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+            <p className="text-[11px] text-warning-700">
               Estimativa: tributação simplificada (Lucro Presumido ≈ 6,5%
               sobre venda). Consulte seu contador.
             </p>

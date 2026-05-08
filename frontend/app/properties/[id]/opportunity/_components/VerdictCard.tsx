@@ -10,16 +10,18 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type { OpportunityResult, Property, Verdict } from "@/lib/api";
-import { formatBRL, formatPct } from "@/lib/utils";
+import { cn, formatBRL, formatPct } from "@/lib/utils";
+
+type Tone = "success" | "warning" | "neutral" | "danger";
 
 const VERDICT_META: Record<
   Verdict,
   {
     label: string;
     description: string;
-    badge: "success" | "warning" | "destructive" | "secondary";
+    badge: "success" | "warning" | "danger" | "secondary";
     Icon: typeof CheckCircle2;
-    accent: string;
+    tone: Tone;
   }
 > = {
   BOA_OPORTUNIDADE: {
@@ -28,16 +30,15 @@ const VERDICT_META: Record<
       "ROI líquido projetado acima de 40%. Sinais financeiros são fortes.",
     badge: "success",
     Icon: CheckCircle2,
-    accent: "text-emerald-600 dark:text-emerald-400",
+    tone: "success",
   },
-  // (Para ROI ≥ 50%, esse parecer é "intocável" — nenhum warning rebaixa.)
   BOA_COM_RESSALVAS: {
     label: "Boa, com ressalvas",
     description:
       "Retorno é razoável (entre 20% e 40%) mas há pontos de atenção. Leia os warnings.",
     badge: "warning",
     Icon: AlertTriangle,
-    accent: "text-amber-600 dark:text-amber-400",
+    tone: "warning",
   },
   NEUTRO: {
     label: "Neutro",
@@ -45,22 +46,52 @@ const VERDICT_META: Record<
       "Retorno modesto (entre 5% e 20%). Possível, mas não há margem para imprevistos.",
     badge: "secondary",
     Icon: MinusCircle,
-    accent: "text-muted-foreground",
+    tone: "neutral",
   },
   INVIAVEL: {
     label: "Inviável",
     description:
       "ROI muito baixo ou negativo. Reduzir o lance ou descartar a oportunidade.",
-    badge: "destructive",
+    badge: "danger",
     Icon: XCircle,
-    accent: "text-destructive",
+    tone: "danger",
   },
   INDETERMINADO: {
     label: "Indeterminado",
     description: "Faltam dados para uma conclusão clara.",
     badge: "secondary",
     Icon: MinusCircle,
-    accent: "text-muted-foreground",
+    tone: "neutral",
+  },
+};
+
+const TONE_STYLES: Record<
+  Tone,
+  { gradient: string; iconBg: string; iconColor: string; profitPositive: string }
+> = {
+  success: {
+    gradient: "from-success/10 via-card to-card",
+    iconBg: "bg-success-100",
+    iconColor: "text-success-700",
+    profitPositive: "text-success-700",
+  },
+  warning: {
+    gradient: "from-warning/10 via-card to-card",
+    iconBg: "bg-warning-100",
+    iconColor: "text-warning-700",
+    profitPositive: "text-success-700",
+  },
+  neutral: {
+    gradient: "from-muted/40 via-card to-card",
+    iconBg: "bg-muted",
+    iconColor: "text-muted-foreground",
+    profitPositive: "text-success-700",
+  },
+  danger: {
+    gradient: "from-danger/10 via-card to-card",
+    iconBg: "bg-danger-100",
+    iconColor: "text-danger-700",
+    profitPositive: "text-danger-700",
   },
 };
 
@@ -72,6 +103,7 @@ export function VerdictCard({
   property: Property;
 }) {
   const meta = VERDICT_META[result.verdict];
+  const style = TONE_STYLES[meta.tone];
   const { Icon } = meta;
 
   const targetRoi = result.input.target_net_roi_pct;
@@ -79,11 +111,23 @@ export function VerdictCard({
   const reaches = realistaRoi >= targetRoi;
 
   return (
-    <Card className="overflow-hidden">
+    <Card
+      className={cn(
+        "overflow-hidden bg-gradient-to-br",
+        style.gradient,
+      )}
+    >
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <Icon className={`size-7 ${meta.accent}`} />
+            <span
+              className={cn(
+                "inline-flex size-11 shrink-0 items-center justify-center rounded-xl",
+                style.iconBg,
+              )}
+            >
+              <Icon className={cn("size-6", style.iconColor)} />
+            </span>
             <div>
               <CardTitle className="text-xl">{meta.label}</CardTitle>
               <p className="mt-0.5 text-sm text-muted-foreground">
@@ -101,15 +145,15 @@ export function VerdictCard({
           <KPI
             label="ROI líquido (realista)"
             value={formatPct(realistaRoi)}
-            accent={meta.accent}
+            accent={style.iconColor}
           />
           <KPI
             label="Lucro líquido (realista)"
             value={formatBRL(result.realista.net_profit)}
             accent={
               result.realista.net_profit >= 0
-                ? "text-emerald-600 dark:text-emerald-400"
-                : "text-destructive"
+                ? style.profitPositive
+                : "text-danger-700"
             }
           />
           <KPI
@@ -131,30 +175,34 @@ export function VerdictCard({
             }
             accent={
               result.max_bid_for_target == null
-                ? "text-destructive"
+                ? "text-danger-700"
                 : result.input.bid_amount <= result.max_bid_for_target
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-amber-600 dark:text-amber-400"
+                  ? "text-success-700"
+                  : "text-warning-700"
             }
           />
         </div>
 
-        <div className="rounded-md border bg-muted/30 p-3 text-xs">
+        <div className="rounded-lg border bg-card/60 p-3 text-xs">
           <p>
             Cenário <strong>realista</strong>{" "}
-            {reaches
-              ? "atinge o ROI alvo. ✅"
-              : "NÃO atinge o ROI alvo — considere baixar o lance."}{" "}
-            ·{" "}
+            {reaches ? (
+              <span className="text-success-700">
+                atinge o ROI alvo. ✓
+              </span>
+            ) : (
+              <span className="text-warning-700">
+                NÃO atinge o ROI alvo — considere baixar o lance.
+              </span>
+            )}
+            {" · "}
             <span className="text-muted-foreground">
               {property.city}/{property.state}
             </span>
           </p>
         </div>
 
-        {/* Transparência: por que este verdict foi escolhido */}
         <VerdictExplanation result={result} />
-        
 
         {result.warnings.length > 0 && (
           <div className="space-y-2">
@@ -165,7 +213,7 @@ export function VerdictCard({
               {result.warnings.map((w, i) => (
                 <li
                   key={i}
-                  className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-900 dark:text-amber-200"
+                  className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning-50 p-2 text-xs text-warning-700"
                 >
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                   <span>{w}</span>
@@ -182,13 +230,12 @@ export function VerdictCard({
 function VerdictExplanation({ result }: { result: OpportunityResult }) {
   const { verdict, verdict_base, verdict_factors } = result;
 
-  // Quando o verdict final == base e não há fatores, não há nada a explicar.
   const wasDowngraded = verdict !== verdict_base;
   const hasFactors = verdict_factors && verdict_factors.length > 0;
   if (!wasDowngraded && !hasFactors) return null;
 
   return (
-    <details className="rounded-md border border-dashed p-3 text-xs">
+    <details className="rounded-lg border border-dashed p-3 text-xs">
       <summary className="cursor-pointer font-medium text-foreground">
         Por que este parecer?
       </summary>
@@ -250,11 +297,11 @@ function KPI({
   accent?: string;
 }) {
   return (
-    <div className="rounded-md border bg-card p-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+    <div className="rounded-lg border bg-card/70 p-3">
+      <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
-      <div className={`mt-1 text-xl font-semibold ${accent ?? ""}`}>
+      <div className={cn("mt-1 text-xl font-semibold tabular-nums", accent)}>
         {value}
       </div>
       {sub && (
