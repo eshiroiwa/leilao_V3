@@ -68,6 +68,7 @@ const OTHER_COSTS_DEFAULT_BY_OCC: Record<string, number> = {
   unknown: 8_000,
 };
 
+export const ROI_EXCELLENT = 0.5;
 export const ROI_GREAT = 0.4;
 export const ROI_OK = 0.2;
 export const ROI_NEUTRAL = 0.05;
@@ -314,6 +315,8 @@ function downgrade(v: Verdict): Verdict {
 }
 
 function floorForRoi(roi: number): Verdict {
+  // ROI ≥ 50% é "intocável" — nenhum warning rebaixa.
+  if (roi >= ROI_EXCELLENT) return "BOA_OPORTUNIDADE";
   if (roi >= ROI_GREAT) return "BOA_COM_RESSALVAS";
   if (roi >= ROI_OK) return "NEUTRO";
   return "INVIAVEL";
@@ -341,7 +344,7 @@ export function buildWarnings(args: {
   const occ = (args.occupancyStatus ?? "").toLowerCase();
   if (occ === "ocupado") {
     out.push(
-      "Imóvel ocupado: prevê-se ação de imissão de posse, com custos e prazo adicionais.",
+      "Imóvel ocupado (comum em leilões). O default de 'outros custos' já inclui desocupação; ajuste se for necessário ação judicial.",
     );
   } else if (!occ || occ === "unknown" || occ === "desconhecido") {
     out.push(
@@ -389,7 +392,10 @@ export function buildWarnings(args: {
 }
 
 export function hasCriticalWarnings(ws: string[]): boolean {
-  const keys = ["confiança baixa", "ônus/dívidas", "ação de imissão"];
+  // SOMENTE riscos FINANCEIROS rebaixam o verdict.
+  // Imóvel OCUPADO é o normal em leilões — aparece como informativo, mas
+  // não é "crítico" (custos de desocupação já estão em "outros custos").
+  const keys = ["confiança baixa", "ônus/dívidas"];
   return ws.some((w) => keys.some((k) => w.includes(k)));
 }
 
@@ -411,7 +417,7 @@ export function classifyVerdict(args: {
   if (args.pessimistaNetProfit < 0)
     factors.push("Cenário pessimista é deficitário");
   if (args.hasCritical)
-    factors.push("Alertas críticos identificados (ônus/ocupação/CMA fraca)");
+    factors.push("Riscos financeiros relevantes (ônus declarados ou CMA fraca)");
 
   let v = base;
   for (let i = 0; i < factors.length; i++) v = downgrade(v);

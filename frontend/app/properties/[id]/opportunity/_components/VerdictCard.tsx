@@ -30,6 +30,7 @@ const VERDICT_META: Record<
     Icon: CheckCircle2,
     accent: "text-emerald-600 dark:text-emerald-400",
   },
+  // (Para ROI ≥ 50%, esse parecer é "intocável" — nenhum warning rebaixa.)
   BOA_COM_RESSALVAS: {
     label: "Boa, com ressalvas",
     description:

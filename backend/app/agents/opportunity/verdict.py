@@ -26,10 +26,14 @@ from app.agents.opportunity.assumptions import VerdictType
 # =============================================================================
 # Faixas de ROI líquido (cenário REALISTA) que classificam a oportunidade
 # =============================================================================
-ROI_GREAT_THRESHOLD = 0.40   # ≥ 40% líquido sobre capital
-ROI_OK_THRESHOLD = 0.20      # entre 20% e 40%
-ROI_NEUTRAL_THRESHOLD = 0.05 # entre 5% e 20% — neutro
-                             # < 5% = inviável
+# `EXCELLENT` é um threshold "intocável": acima dele NENHUM warning rebaixa o
+# verdict. A ideia é que retorno líquido tão alto compensa qualquer fricção
+# operacional razoável que o imóvel possa ter (ocupação, reforma extensa, etc.).
+ROI_EXCELLENT_THRESHOLD = 0.50  # ≥ 50% líquido sobre capital — excelente, intocável
+ROI_GREAT_THRESHOLD = 0.40       # ≥ 40% líquido sobre capital — boa oportunidade base
+ROI_OK_THRESHOLD = 0.20          # entre 20% e 40% — boa com ressalvas base
+ROI_NEUTRAL_THRESHOLD = 0.05     # entre 5% e 20% — neutro
+                                 # < 5% = inviável
 
 
 # =============================================================================
@@ -62,12 +66,22 @@ def _downgrade(v: VerdictType) -> VerdictType:
 
 
 def _floor_for_roi(realista_net_roi_pct: float) -> VerdictType:
-    """Verdict mínimo permitido dado o ROI realista — o "piso"."""
+    """Verdict mínimo permitido dado o ROI realista — o "piso".
+
+    A regra é "ROI alto é difícil de invalidar":
+
+      * ≥ 50% → piso = BOA_OPORTUNIDADE (excelente, intocável).
+      * ≥ 40% → piso = BOA_COM_RESSALVAS (cai 1 nível no máximo).
+      * ≥ 20% → piso = NEUTRO.
+      * < 20% → sem piso (pode chegar a INVIAVEL).
+    """
+    if realista_net_roi_pct >= ROI_EXCELLENT_THRESHOLD:
+        return "BOA_OPORTUNIDADE"
     if realista_net_roi_pct >= ROI_GREAT_THRESHOLD:
-        return "BOA_COM_RESSALVAS"  # ROI ≥40% não desce abaixo disso
+        return "BOA_COM_RESSALVAS"
     if realista_net_roi_pct >= ROI_OK_THRESHOLD:
-        return "NEUTRO"              # ROI 20–40% não desce abaixo de NEUTRO
-    return "INVIAVEL"                # abaixo disso o piso é o próprio fundo
+        return "NEUTRO"
+    return "INVIAVEL"
 
 
 def _better_of(a: VerdictType, b: VerdictType) -> VerdictType:
@@ -99,11 +113,12 @@ def build_warnings(
     """
     warnings: list[str] = []
 
-    # Ocupação
+    # Ocupação — informativo, não crítico (comum em leilões).
     occ = (occupancy_status or "").strip().lower()
     if occ == "ocupado":
         warnings.append(
-            "Imóvel ocupado: prevê-se ação de imissão de posse, com custos e prazo adicionais."
+            "Imóvel ocupado (comum em leilões). O default de 'outros custos' "
+            "já inclui desocupação; ajuste se for necessário ação judicial."
         )
     elif occ in {"", "unknown", "desconhecido"}:
         warnings.append(
@@ -191,7 +206,7 @@ def classify_verdict(
     if pessimista_net_profit < 0:
         factors.append("Cenário pessimista é deficitário")
     if has_critical_warnings:
-        factors.append("Alertas críticos identificados (ônus/ocupação/CMA fraca)")
+        factors.append("Riscos financeiros relevantes (ônus declarados ou CMA fraca)")
 
     final = base
     for _ in factors:
@@ -208,10 +223,22 @@ def classify_verdict(
 
 
 def has_critical_warnings(warnings: Sequence[str]) -> bool:
-    """Detecta warnings que devem causar downgrade automático do parecer."""
+    """Detecta warnings que devem causar downgrade automático do parecer.
+
+    SOMENTE riscos FINANCEIROS são considerados críticos — ou seja, coisas
+    que podem fazer o investidor perder dinheiro fora do que já foi
+    contabilizado nos custos:
+
+      * ``confiança baixa``  — CMA fraca: o "preço de venda" é incerto.
+      * ``ônus/dívidas``     — dívidas não declaradas/não sub-rogadas.
+
+    Imóvel OCUPADO **não** é crítico: é o cenário comum em leilões e os
+    custos de desocupação já entram no campo "outros custos" (default
+    elevado quando a property está marcada como ocupada). Aparece na lista
+    de warnings só como informação operacional.
+    """
     keywords = (
         "confiança baixa",
         "ônus/dívidas",
-        "ação de imissão",
     )
     return any(any(k in w for k in keywords) for w in warnings)

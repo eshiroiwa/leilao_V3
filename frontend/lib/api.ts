@@ -243,6 +243,13 @@ export type OpportunityAnalysisRow = {
   assumptions: OpportunityAssumptions;
   verdict_base?: Verdict;
   verdict_factors?: string[];
+  /** Overrides persistidos para reproduzir a análise no formulário. */
+  input_overrides?: {
+    itbi_pct_override?: number | null;
+    registration_pct_override?: number | null;
+    auctioneer_fee_pct_override?: number | null;
+    sale_price_override?: number | null;
+  } | null;
   created_at: string;
 };
 

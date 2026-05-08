@@ -386,6 +386,14 @@ def analyse_and_save(
         "verdict": result.verdict,
         "warnings": result.warnings,
         "assumptions": result.assumptions.model_dump(),
+        # Overrides do formulário — necessários para reproduzir a análise
+        # no frontend (clicar num item antigo do histórico).
+        "input_overrides": {
+            "itbi_pct_override": inp.itbi_pct_override,
+            "registration_pct_override": inp.registration_pct_override,
+            "auctioneer_fee_pct_override": inp.auctioneer_fee_pct_override,
+            "sale_price_override": inp.sale_price_override,
+        },
     }
 
     row = supabase.insert_opportunity_analysis(payload)

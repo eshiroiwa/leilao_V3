@@ -303,6 +303,10 @@ create table if not exists public.opportunity_analyses (
   warnings            jsonb,
   assumptions         jsonb not null,
 
+  -- overrides do formulário (sale_price + alíquotas) para reproduzir a
+  -- análise no frontend; opcional (analyses pré-migration têm null).
+  input_overrides     jsonb,
+
   created_at          timestamptz not null default now()
 );
 

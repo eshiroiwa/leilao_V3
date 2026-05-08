@@ -122,6 +122,40 @@ def test_save_persists_and_returns_id(
     assert body["id"] == ANALYSIS_ID
     assert "result" in body
     mock_supabase.insert_opportunity_analysis.assert_called_once()
+    # O payload persistido deve carregar `input_overrides` (mesmo que com
+    # valores `None`) — é o que permite restaurar o formulário a partir
+    # do histórico no frontend.
+    payload = mock_supabase.insert_opportunity_analysis.call_args.args[0]
+    assert "input_overrides" in payload
+    assert set(payload["input_overrides"].keys()) == {
+        "itbi_pct_override",
+        "registration_pct_override",
+        "auctioneer_fee_pct_override",
+        "sale_price_override",
+    }
+
+
+def test_save_persists_input_overrides_when_provided(
+    mock_supabase: MagicMock, client: TestClient
+) -> None:
+    """Quando o usuário envia overrides, eles devem chegar até o insert."""
+    res = client.post(
+        f"/api/v1/properties/{PROP_ID}/opportunity-analyses",
+        json={
+            "bid_amount": 200_000,
+            "buyer_type": "PF",
+            "itbi_pct_override": 0.025,
+            "auctioneer_fee_pct_override": 0.04,
+            "sale_price_override": 480_000,
+        },
+    )
+    assert res.status_code == 201, res.text
+    payload = mock_supabase.insert_opportunity_analysis.call_args.args[0]
+    overrides = payload["input_overrides"]
+    assert overrides["itbi_pct_override"] == 0.025
+    assert overrides["auctioneer_fee_pct_override"] == 0.04
+    assert overrides["sale_price_override"] == 480_000
+    assert overrides["registration_pct_override"] is None
 
 
 def test_save_pj_warns_about_estimativa(
