@@ -17,6 +17,7 @@ o PostgREST converte se a coluna for ``geography``.
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from typing import Any
 
@@ -426,6 +427,179 @@ class SupabaseService:
             ) from exc
         rows = res.data or []
         return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
+    # Listings vizinhos (AGENTE 4 — busca por raio)
+    # ------------------------------------------------------------------ #
+    def find_listings_near(
+        self,
+        *,
+        lat: float,
+        lng: float,
+        radius_m: int,
+        property_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Retorna listings num raio aproximado em torno de (lat, lng).
+
+        O cliente supabase-py não expõe PostGIS direto, então usamos um
+        bounding-box em latitude/longitude (índice ``idx_listings_lat_lng``
+        cobre a query) e refinamos por distância haversine no Python.
+
+        Para os usos do AGENTE 4 (estatísticas de bairro) essa precisão
+        é mais que suficiente — não estamos calculando distâncias para
+        rota ou cobrança.
+        """
+        if radius_m <= 0:
+            return []
+        # 1° de latitude ≈ 111_320 m. Para longitude, multiplicar por cos(lat).
+        dlat = radius_m / 111_320.0
+        cos_lat = max(math.cos(math.radians(lat)), 1e-6)
+        dlng = radius_m / (111_320.0 * cos_lat)
+
+        try:
+            q = (
+                self._client.table("listings")
+                .select("*")
+                .gte("latitude", lat - dlat)
+                .lte("latitude", lat + dlat)
+                .gte("longitude", lng - dlng)
+                .lte("longitude", lng + dlng)
+            )
+            if property_type:
+                q = q.eq("property_type", property_type)
+            res = q.limit(limit).execute()
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar listings vizinhos: {exc}"
+            ) from exc
+
+        rows = res.data or []
+        # Refina por haversine (filtra os cantos do bbox).
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            rlat = r.get("latitude")
+            rlng = r.get("longitude")
+            if rlat is None or rlng is None:
+                continue
+            if _haversine_m(lat, lng, float(rlat), float(rlng)) <= radius_m:
+                out.append(r)
+        return out
+
+    # ------------------------------------------------------------------ #
+    # Deep analyses (AGENTE 4)
+    # ------------------------------------------------------------------ #
+    def insert_deep_analysis_pending(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Cria a row da análise com ``status='pending'``."""
+        body = {**payload, "status": "pending"}
+        try:
+            res = (
+                self._client.table("deep_analyses").insert(body).execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao criar deep_analysis pending: {exc}"
+            ) from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError(
+                "Insert de deep_analysis não retornou registros."
+            )
+        return rows[0]
+
+    def update_deep_analysis(
+        self, analysis_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            res = (
+                self._client.table("deep_analyses")
+                .update(fields)
+                .eq("id", analysis_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao atualizar deep_analysis {analysis_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError(
+                f"Update de deep_analysis {analysis_id} não retornou registros."
+            )
+        return rows[0]
+
+    def list_deep_analyses(
+        self, property_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        try:
+            res = (
+                self._client.table("deep_analyses")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar deep_analyses: {exc}"
+            ) from exc
+        return res.data or []
+
+    def get_deep_analysis(
+        self, analysis_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("deep_analyses")
+                .select("*")
+                .eq("id", analysis_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao consultar deep_analysis {analysis_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    def get_latest_completed_deep_analysis(
+        self, property_id: str
+    ) -> dict[str, Any] | None:
+        """Última análise *completada* (usada como cache)."""
+        try:
+            res = (
+                self._client.table("deep_analyses")
+                .select("*")
+                .eq("property_id", property_id)
+                .eq("status", "completed")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar última deep_analysis: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Distância haversine em metros (raio da Terra = 6 371 000 m)."""
+    r = 6_371_000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dlam / 2) ** 2
+    )
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 @lru_cache(maxsize=1)

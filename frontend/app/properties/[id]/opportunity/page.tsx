@@ -5,12 +5,14 @@ import { PropertyImage } from "@/components/PropertyImage";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   api,
+  type DeepAnalysisRow,
   type OpportunityAnalysisRow,
   type Property,
   type Valuation,
 } from "@/lib/api";
 import { formatBRL } from "@/lib/utils";
 
+import { DeepAnalysisSection } from "./_components/DeepAnalysisSection";
 import { OpportunityView } from "./_components/OpportunityView";
 
 export const dynamic = "force-dynamic";
@@ -22,11 +24,13 @@ export default async function PropertyOpportunityPage({
 }) {
   const { id } = await params;
 
-  // Carrega contexto em paralelo: imóvel, valuations e histórico de análises.
-  const [propertyList, valuations, history] = await Promise.all([
+  // Carrega contexto em paralelo: imóvel, valuations, histórico de análises
+  // e a última deep analysis (cache hint para o componente client-side).
+  const [propertyList, valuations, history, latestDeep] = await Promise.all([
     api.listProperties({ limit: 200 }).catch(() => [] as Property[]),
     api.listValuations(id).catch(() => [] as Valuation[]),
     api.listOpportunities(id).catch(() => [] as OpportunityAnalysisRow[]),
+    api.getLatestDeepAnalysis(id).catch(() => null as DeepAnalysisRow | null),
   ]);
 
   const property = propertyList.find((p) => p.id === id) ?? null;
@@ -119,6 +123,12 @@ export default async function PropertyOpportunityPage({
         property={property}
         valuation={latestValuation}
         history={history}
+      />
+
+      <DeepAnalysisSection
+        propertyId={property.id}
+        opportunityAnalysisId={history[0]?.id ?? null}
+        initialLatest={latestDeep}
       />
     </main>
   );

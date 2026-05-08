@@ -109,6 +109,79 @@ class GoogleMapsService:
             return float(loc["lat"]), float(loc["lng"])
         return None
 
+    # --------------------------------------------------------------------- #
+    # Places — Nearby Search (usado pelo AGENTE 4 para amenidades)
+    # --------------------------------------------------------------------- #
+    def nearest_place(
+        self,
+        *,
+        lat: float,
+        lng: float,
+        place_type: str,
+        radius_m: int = 5_000,
+    ) -> dict[str, Any] | None:
+        """Retorna a amenidade mais próxima do tipo ``place_type``.
+
+        ``place_type`` deve ser um valor da lista oficial de tipos do
+        Google Places (ex.: ``subway_station``, ``school``, ``hospital``).
+
+        Faz o ``places_nearby`` ordenado por distância (rank_by="distance"),
+        pega o primeiro resultado e calcula a distância até o ponto de
+        origem em metros (Haversine).
+        """
+        logger.info(
+            "gmaps.places.nearest.start",
+            place_type=place_type,
+            lat=lat,
+            lng=lng,
+        )
+        try:
+            res = self._gmaps.places_nearby(
+                location=(lat, lng),
+                rank_by="distance",
+                type=place_type,
+            )
+        except Exception as exc:
+            logger.error(
+                "gmaps.places.nearest.exception",
+                place_type=place_type,
+                error=str(exc),
+            )
+            raise GoogleMapsError(f"Places nearby falhou: {exc}") from exc
+
+        results = res.get("results") or []
+        if not results:
+            return None
+
+        best = results[0]
+        loc = (best.get("geometry") or {}).get("location") or {}
+        if "lat" not in loc or "lng" not in loc:
+            return None
+
+        from math import asin, cos, radians, sin, sqrt
+
+        plat = float(loc["lat"])
+        plng = float(loc["lng"])
+        r = 6_371_000.0
+        p1 = radians(lat)
+        p2 = radians(plat)
+        dphi = radians(plat - lat)
+        dlam = radians(plng - lng)
+        a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlam / 2) ** 2
+        distance_m = int(2 * r * asin(sqrt(a)))
+
+        if distance_m > radius_m:
+            return None
+
+        return {
+            "name": best.get("name"),
+            "place_id": best.get("place_id"),
+            "lat": plat,
+            "lng": plng,
+            "distance_m": distance_m,
+            "vicinity": best.get("vicinity"),
+        }
+
 
 @lru_cache(maxsize=1)
 def get_google_maps_service() -> GoogleMapsService:

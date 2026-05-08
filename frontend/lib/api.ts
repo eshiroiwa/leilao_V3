@@ -221,6 +221,100 @@ export type OpportunityResult = {
   assumptions: OpportunityAssumptions;
 };
 
+// =============================================================================
+// AGENTE 4 (Deep Analysis)
+// =============================================================================
+export type DeepAnalysisStatus = "pending" | "running" | "completed" | "failed";
+/** Confidence específica do AGENTE 4 — só 3 níveis (sem INSUFFICIENT). */
+export type DeepConfidence = "HIGH" | "MEDIUM" | "LOW";
+
+export type UrbanRiskItem = {
+  type: string;
+  summary: string;
+  confidence: DeepConfidence;
+  source_url?: string | null;
+};
+
+export type DeepSourceDocument = {
+  url: string;
+  title?: string | null;
+  excerpt?: string | null;
+  scraped_at?: string | null;
+};
+
+export type DeepAnalysisRow = {
+  id: string;
+  property_id: string;
+  opportunity_analysis_id?: string | null;
+
+  status: DeepAnalysisStatus;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+
+  // demografia / liquidez
+  city_population?: number | null;
+  city_population_year?: number | null;
+  city_population_source?: string | null;
+  liquidity_score?: number | null;
+  liquidity_confidence?: DeepConfidence | null;
+  liquidity_evidence?: Record<string, unknown> | null;
+
+  // outlier
+  is_outlier_size?: boolean | null;
+  is_outlier_price?: boolean | null;
+  size_zscore?: number | null;
+  price_zscore?: number | null;
+  outlier_evidence?: Record<string, unknown> | null;
+
+  // flipping
+  neighborhood_price_max?: number | null;
+  neighborhood_price_p90?: number | null;
+  neighborhood_ppm2_p90?: number | null;
+  flipping_potential_score?: number | null;
+  flipping_evidence?: Record<string, unknown> | null;
+
+  // tendência
+  price_trend_12m_pct?: number | null;
+  price_trend_confidence?: DeepConfidence | null;
+  price_trend_evidence?: Record<string, unknown> | null;
+
+  // amenidades
+  nearest_metro_m?: number | null;
+  nearest_school_m?: number | null;
+  nearest_hospital_m?: number | null;
+  amenities_evidence?: Record<string, unknown> | null;
+
+  // riscos urbanos
+  urban_risks?: UrbanRiskItem[] | null;
+
+  // histórico
+  prior_auction_count?: number | null;
+  prior_auction_evidence?: Record<string, unknown> | null;
+
+  // síntese
+  overall_score?: number | null;
+  summary_text?: string | null;
+  red_flags?: string[] | null;
+  green_flags?: string[] | null;
+  recommendations?: string[] | null;
+
+  source_documents?: DeepSourceDocument[] | null;
+  cost_estimate_usd?: number | null;
+  firecrawl_calls?: number | null;
+  llm_calls?: number | null;
+
+  created_at: string;
+};
+
+export type StartDeepAnalysisResponse = {
+  id: string;
+  status: DeepAnalysisStatus;
+  from_cache: boolean;
+  row: DeepAnalysisRow | null;
+};
+
 export type OpportunityAnalysisRow = {
   id: string;
   property_id: string;
@@ -339,5 +433,33 @@ export const api = {
   getOpportunity: (propertyId: string, analysisId: string) =>
     request<OpportunityAnalysisRow>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses/${encodeURIComponent(analysisId)}`,
+    ),
+
+  // ===== AGENTE 4 (Deep Analysis) =====
+  startDeepAnalysis: (
+    propertyId: string,
+    payload: {
+      opportunity_analysis_id?: string | null;
+      force_refresh?: boolean;
+    } = {},
+  ) =>
+    request<StartDeepAnalysisResponse>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/deep-analyses`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  listDeepAnalyses: (propertyId: string) =>
+    request<DeepAnalysisRow[]>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/deep-analyses`,
+    ),
+
+  getLatestDeepAnalysis: (propertyId: string) =>
+    request<DeepAnalysisRow | null>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/deep-analyses/latest`,
+    ),
+
+  getDeepAnalysis: (analysisId: string) =>
+    request<DeepAnalysisRow>(
+      `/api/v1/deep-analyses/${encodeURIComponent(analysisId)}`,
     ),
 };

@@ -316,6 +316,86 @@ create index if not exists idx_opp_analyses_verdict
   on public.opportunity_analyses (verdict);
 
 -- =============================================================================
+-- AGENTE 4 — deep_analyses (análise aprofundada de bairro/imóvel)
+-- Workflow assíncrono: status pending → running → completed | failed.
+-- =============================================================================
+create table if not exists public.deep_analyses (
+  id                       uuid primary key default gen_random_uuid(),
+  property_id              uuid not null references public.properties(id) on delete cascade,
+  opportunity_analysis_id  uuid references public.opportunity_analyses(id) on delete set null,
+  agent_run_id             uuid references public.agent_runs(id) on delete set null,
+
+  status                   text not null default 'pending'
+                              check (status in ('pending','running','completed','failed')),
+  error_message            text,
+  started_at               timestamptz,
+  completed_at             timestamptz,
+  duration_ms              integer,
+
+  -- demografia / liquidez
+  city_population          integer,
+  city_population_year     integer,
+  city_population_source   text,
+  liquidity_score          smallint check (liquidity_score between 1 and 5),
+  liquidity_confidence     text check (liquidity_confidence in ('HIGH','MEDIUM','LOW')),
+  liquidity_evidence       jsonb,
+
+  -- outlier
+  is_outlier_size          boolean,
+  is_outlier_price         boolean,
+  size_zscore              numeric(6,2),
+  price_zscore             numeric(6,2),
+  outlier_evidence         jsonb,
+
+  -- teto / flipping
+  neighborhood_price_max   numeric(14,2),
+  neighborhood_price_p90   numeric(14,2),
+  neighborhood_ppm2_p90    numeric(10,2),
+  flipping_potential_score smallint check (flipping_potential_score between 1 and 5),
+  flipping_evidence        jsonb,
+
+  -- tendência
+  price_trend_12m_pct      numeric(6,2),
+  price_trend_confidence   text check (price_trend_confidence in ('HIGH','MEDIUM','LOW')),
+  price_trend_evidence     jsonb,
+
+  -- amenidades
+  nearest_metro_m          integer,
+  nearest_school_m         integer,
+  nearest_hospital_m       integer,
+  amenities_evidence       jsonb,
+
+  -- riscos urbanos
+  urban_risks              jsonb,
+
+  -- histórico
+  prior_auction_count      integer,
+  prior_auction_evidence   jsonb,
+
+  -- síntese
+  overall_score            smallint check (overall_score between 1 and 5),
+  summary_text             text,
+  red_flags                jsonb,
+  green_flags              jsonb,
+  recommendations          jsonb,
+
+  raw_findings             jsonb,
+  source_documents         jsonb,
+  cost_estimate_usd        numeric(10,4),
+  firecrawl_calls          smallint not null default 0,
+  llm_calls                smallint not null default 0,
+
+  created_at               timestamptz not null default now()
+);
+
+create index if not exists idx_deep_analyses_property
+  on public.deep_analyses (property_id, created_at desc);
+create index if not exists idx_deep_analyses_status
+  on public.deep_analyses (status);
+create index if not exists idx_deep_analyses_property_completed
+  on public.deep_analyses (property_id, created_at desc) where status = 'completed';
+
+-- =============================================================================
 -- Row Level Security (placeholder — refine conforme regras de auth do projeto)
 -- =============================================================================
 alter table public.auctioneers           enable row level security;
@@ -325,6 +405,7 @@ alter table public.listings              enable row level security;
 alter table public.valuations            enable row level security;
 alter table public.valuation_comparables enable row level security;
 alter table public.opportunity_analyses  enable row level security;
+alter table public.deep_analyses          enable row level security;
 
 -- Política de leitura pública (ajuste conforme necessidade real)
 drop policy if exists "public read auctioneers" on public.auctioneers;
@@ -346,5 +427,8 @@ create policy "public read valuation_comparables" on public.valuation_comparable
 
 drop policy if exists "public read opportunity_analyses" on public.opportunity_analyses;
 create policy "public read opportunity_analyses" on public.opportunity_analyses for select using (true);
+
+drop policy if exists "public read deep_analyses" on public.deep_analyses;
+create policy "public read deep_analyses" on public.deep_analyses for select using (true);
 
 -- Escritas só via service_role (a API roda como service_role no backend).
