@@ -347,6 +347,54 @@ export type OpportunityAnalysisRow = {
   created_at: string;
 };
 
+// =============================================================================
+// Dashboard (home)
+// =============================================================================
+export type DashboardPropertySummary = {
+  property_id: string;
+  title: string | null;
+  image_url: string | null;
+  city: string | null;
+  state: string | null;
+  property_type: string | null;
+  minimum_bid_first: number | null;
+  minimum_bid_second: number | null;
+  appraisal_value: number | null;
+};
+
+export type DashboardCalendarEvent = DashboardPropertySummary & {
+  /** ISO 8601 com timezone. */
+  date: string;
+  kind: "first" | "second";
+  value: number | null;
+};
+
+export type DashboardOpportunity = DashboardPropertySummary & {
+  opportunity_id: string;
+  verdict: Verdict;
+  net_roi_pct: number | null;
+  net_profit: number | null;
+  bid_amount: number | null;
+  created_at: string;
+};
+
+export type DashboardTotals = {
+  properties: number;
+  with_geocoding: number;
+  upcoming_30d: number;
+  pending_valuation: number;
+  pending_opportunity: number;
+  good_opportunities: number;
+};
+
+export type DashboardResponse = {
+  totals: DashboardTotals;
+  calendar: DashboardCalendarEvent[];
+  top_opportunities: DashboardOpportunity[];
+  upcoming_auctions: DashboardCalendarEvent[];
+  generated_at: string;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -462,4 +510,26 @@ export const api = {
     request<DeepAnalysisRow>(
       `/api/v1/deep-analyses/${encodeURIComponent(analysisId)}`,
     ),
+
+  // ===== Dashboard (home) =====
+  getDashboard: (params?: {
+    upcoming_window_days?: number;
+    top_opportunities?: number;
+    upcoming_limit?: number;
+    calendar_window_days?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.upcoming_window_days)
+      qs.set("upcoming_window_days", String(params.upcoming_window_days));
+    if (params?.top_opportunities)
+      qs.set("top_opportunities", String(params.top_opportunities));
+    if (params?.upcoming_limit)
+      qs.set("upcoming_limit", String(params.upcoming_limit));
+    if (params?.calendar_window_days)
+      qs.set("calendar_window_days", String(params.calendar_window_days));
+    const search = qs.toString();
+    return request<DashboardResponse>(
+      `/api/v1/dashboard${search ? `?${search}` : ""}`,
+    );
+  },
 };

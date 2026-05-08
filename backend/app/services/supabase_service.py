@@ -429,6 +429,51 @@ class SupabaseService:
         return rows[0] if rows else None
 
     # ------------------------------------------------------------------ #
+    # Dashboard helpers — agregações leves para a home
+    # ------------------------------------------------------------------ #
+    def list_property_ids_with_valuations(self) -> set[str]:
+        """Conjunto de ``property_id`` que possuem ao menos uma valuation.
+
+        Faz um único select projetando só o ``property_id`` para reduzir
+        payload — útil para calcular "pendentes de avaliação" no dashboard.
+        """
+        try:
+            res = (
+                self._client.table("valuations")
+                .select("property_id")
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar property_ids de valuations: {exc}"
+            ) from exc
+        rows = res.data or []
+        return {r["property_id"] for r in rows if r.get("property_id")}
+
+    def list_recent_opportunity_analyses(
+        self, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Últimas N opportunity_analyses (todas as propriedades).
+
+        Usado pelo dashboard para calcular "pendentes" e ranquear top
+        oportunidades. Como cada análise é razoavelmente pequena (sem
+        joins) o limite default é generoso.
+        """
+        try:
+            res = (
+                self._client.table("opportunity_analyses")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar opportunity_analyses globais: {exc}"
+            ) from exc
+        return res.data or []
+
+    # ------------------------------------------------------------------ #
     # Listings vizinhos (AGENTE 4 — busca por raio)
     # ------------------------------------------------------------------ #
     def find_listings_near(
