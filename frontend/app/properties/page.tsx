@@ -23,6 +23,10 @@ export default async function PropertiesPage() {
     (p) => p.latitude !== null && p.longitude !== null,
   );
 
+  // Timestamp único compartilhado com o cliente para classificar
+  // leilões encerrados de forma determinística (evita mismatch SSR).
+  const nowIso = new Date().toISOString();
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -32,8 +36,8 @@ export default async function PropertiesPage() {
           </h1>
           <p className="text-sm text-muted-foreground">
             {properties.length} registro(s) · {geocoded.length} com
-            geolocalização. Clique em um card para focar no mapa, ou clique no
-            marcador.
+            geolocalização. Use a busca para filtrar e clique nos cards para
+            focar no mapa.
           </p>
         </div>
         <Button asChild>
@@ -64,7 +68,9 @@ export default async function PropertiesPage() {
         />
       )}
 
-      {properties.length > 0 && <PropertiesView properties={properties} />}
+      {properties.length > 0 && (
+        <PropertiesView properties={properties} nowIso={nowIso} />
+      )}
     </div>
   );
 }

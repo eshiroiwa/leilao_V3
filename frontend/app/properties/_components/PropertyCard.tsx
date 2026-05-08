@@ -3,6 +3,7 @@
 import {
   Bath,
   BedDouble,
+  CalendarOff,
   ExternalLink,
   MapPin,
   MapPinOff,
@@ -49,6 +50,10 @@ export type PropertyCardProps = {
   selected?: boolean;
   onSelect?: (id: string) => void;
   onDeleted?: (id: string) => void | Promise<void>;
+  /** Marca o card visualmente como "leilão encerrado" (cores
+   * dessaturadas, badge "Encerrado"). Quando true a interatividade
+   * permanece — apenas a aparência muda. */
+  expired?: boolean;
 };
 
 export function PropertyCard({
@@ -56,6 +61,7 @@ export function PropertyCard({
   selected = false,
   onSelect,
   onDeleted,
+  expired = false,
 }: PropertyCardProps) {
   const cityState = [property.city, property.state].filter(Boolean).join(" / ");
   const hasGeo = property.latitude !== null && property.longitude !== null;
@@ -80,19 +86,38 @@ export function PropertyCard({
       className={cn(
         "group relative flex h-full flex-col overflow-hidden rounded-xl border transition-all",
         interactive &&
-          "cursor-pointer hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg",
+          "cursor-pointer hover:-translate-y-0.5 hover:shadow-lg",
+        // Quando interativo e ATIVO, hover ganha tom de primário.
+        // Em "encerrado" o hover apenas restaura saturação para sinalizar
+        // que ainda é navegável, sem ressaltar como uma oportunidade ativa.
+        interactive &&
+          !expired &&
+          "hover:border-primary/40",
         selected && "border-primary shadow-md ring-2 ring-primary/40",
+        expired &&
+          "opacity-75 saturate-50 hover:opacity-95 hover:saturate-100",
       )}
     >
       <div className="relative">
         <PropertyImage
           src={property.image_url}
           alt={property.title ?? "Foto do imóvel"}
-          className="[&_img]:transition-transform [&_img]:duration-500 group-hover:[&_img]:scale-[1.04]"
+          className={cn(
+            "[&_img]:transition-all [&_img]:duration-500 group-hover:[&_img]:scale-[1.04]",
+            expired && "[&_img]:grayscale group-hover:[&_img]:grayscale-0",
+          )}
         />
 
         {/* badges sobrepostos no canto superior */}
         <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
+          {expired && (
+            <Badge
+              variant="secondary"
+              className="bg-muted/90 text-muted-foreground backdrop-blur-sm"
+            >
+              <CalendarOff className="mr-1 size-3" /> Encerrado
+            </Badge>
+          )}
           {property.property_type && (
             <Badge
               variant="secondary"

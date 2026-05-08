@@ -49,3 +49,58 @@ export function formatDateTimeBR(iso: string | null | undefined): string {
     timeStyle: "short",
   }).format(d);
 }
+
+/**
+ * Determina se o leilão de um imóvel já encerrou em relação a ``nowIso``.
+ *
+ * Regras:
+ *   • Se houver 2ª praça e ela for posterior a "agora" → ATIVO
+ *     (mesmo que a 1ª praça já tenha passado).
+ *   • Se houver apenas 2ª praça e ela já passou → ENCERRADO.
+ *   • Se houver apenas 1ª praça e ela já passou → ENCERRADO.
+ *   • Se NÃO houver datas conhecidas → assume ATIVO (não temos como
+ *     afirmar o contrário; mostrar é menos pior que esconder).
+ *
+ * Recebe ``nowIso`` em vez de chamar ``new Date()`` para garantir
+ * resultado determinístico entre SSR e cliente — passar
+ * ``DashboardResponse.generated_at`` ou um ISO criado no Server
+ * Component pai.
+ */
+export function isAuctionExpired(
+  property: {
+    first_auction_at: string | null;
+    second_auction_at: string | null;
+  },
+  nowIso: string,
+): boolean {
+  const now = new Date(nowIso).getTime();
+  const first = property.first_auction_at
+    ? new Date(property.first_auction_at).getTime()
+    : null;
+  const second = property.second_auction_at
+    ? new Date(property.second_auction_at).getTime()
+    : null;
+
+  if (second != null && !Number.isNaN(second)) {
+    return second < now;
+  }
+  if (first != null && !Number.isNaN(first)) {
+    return first < now;
+  }
+  return false;
+}
+
+/**
+ * Normaliza string para busca case/diacritic-insensitive.
+ *
+ * "São Paulo, Vila Madalena" → "sao paulo, vila madalena"
+ * Permite que o usuário digite "sao paulo" e encontre "São Paulo".
+ */
+export function normalizeText(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
