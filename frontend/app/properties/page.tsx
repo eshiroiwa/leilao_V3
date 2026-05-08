@@ -1,3 +1,8 @@
+import { Building2, PlusCircle } from "lucide-react";
+import Link from "next/link";
+
+import { EmptyState } from "@/components/EmptyState";
+import { Button } from "@/components/ui/button";
 import { api, type Property } from "@/lib/api";
 
 import { PropertiesView } from "./_components/PropertiesView";
@@ -14,30 +19,49 @@ export default async function PropertiesPage() {
     loadError = err instanceof Error ? err.message : "Erro desconhecido";
   }
 
-  const geocoded = properties.filter((p) => p.latitude !== null && p.longitude !== null);
+  const geocoded = properties.filter(
+    (p) => p.latitude !== null && p.longitude !== null,
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Imóveis processados</h1>
-          <p className="text-muted-foreground">
-            {properties.length} registro(s) · {geocoded.length} com geolocalização.
-            Clique em um card para focar no mapa, ou clique no marcador.
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+            Imóveis processados
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {properties.length} registro(s) · {geocoded.length} com
+            geolocalização. Clique em um card para focar no mapa, ou clique no
+            marcador.
           </p>
         </div>
+        <Button asChild>
+          <Link href="/scrape">
+            <PlusCircle className="size-4" /> Novo scrape
+          </Link>
+        </Button>
       </div>
 
       {loadError && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/5 p-4 text-sm text-destructive">
+        <div className="rounded-xl border border-danger/40 bg-danger-50 p-4 text-sm text-danger-700">
           Não foi possível carregar a lista: {loadError}
         </div>
       )}
 
       {!loadError && properties.length === 0 && (
-        <div className="rounded-md border bg-muted/30 p-10 text-center text-muted-foreground">
-          Nenhum imóvel processado ainda. Comece em <strong>/scrape</strong>.
-        </div>
+        <EmptyState
+          icon={Building2}
+          title="Nenhum imóvel processado ainda"
+          description="Cole a URL de um lote de leiloeiro para começar — o pipeline cuida do resto."
+          action={
+            <Button asChild>
+              <Link href="/scrape">
+                <PlusCircle className="size-4" /> Iniciar primeiro scrape
+              </Link>
+            </Button>
+          }
+        />
       )}
 
       {properties.length > 0 && <PropertiesView properties={properties} />}

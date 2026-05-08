@@ -1,8 +1,12 @@
+import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
-import { PropertyImage } from "@/components/PropertyImage";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   api,
   type DeepAnalysisRow,
@@ -10,7 +14,6 @@ import {
   type Property,
   type Valuation,
 } from "@/lib/api";
-import { formatBRL } from "@/lib/utils";
 
 import { DeepAnalysisSection } from "./_components/DeepAnalysisSection";
 import { OpportunityView } from "./_components/OpportunityView";
@@ -24,8 +27,6 @@ export default async function PropertyOpportunityPage({
 }) {
   const { id } = await params;
 
-  // Carrega contexto em paralelo: imóvel, valuations, histórico de análises
-  // e a última deep analysis (cache hint para o componente client-side).
   const [propertyList, valuations, history, latestDeep] = await Promise.all([
     api.listProperties({ limit: 200 }).catch(() => [] as Property[]),
     api.listValuations(id).catch(() => [] as Valuation[]),
@@ -34,82 +35,36 @@ export default async function PropertyOpportunityPage({
   ]);
 
   const property = propertyList.find((p) => p.id === id) ?? null;
-  if (!property) notFound();
+  if (!property) return null;
 
   const latestValuation = valuations[0] ?? null;
 
   return (
-    <main className="mx-auto w-full max-w-[1600px] space-y-6 p-6">
-      <header>
-        <Link
-          href="/properties"
-          className="text-sm text-muted-foreground hover:text-primary"
-        >
-          ← Voltar
-        </Link>
-        <h1 className="mt-1 text-2xl font-semibold">
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">
           Análise de oportunidade
-        </h1>
+        </h2>
         <p className="text-sm text-muted-foreground">
-          {property.title ?? "Imóvel sem título"} · {property.city}/
-          {property.state}
+          Custos, ROI, veredicto e lance máximo para o ROI alvo.
         </p>
-      </header>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Imóvel</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-6 md:grid-cols-[280px_1fr]">
-          <PropertyImage
-            src={property.image_url}
-            alt={property.title ?? "Foto do imóvel"}
-            className="rounded-md border"
-          />
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-3">
-            <Field label="Tipo" value={property.property_type} capitalize />
-            <Field
-              label="Área total"
-              value={
-                property.area_total_m2
-                  ? `${property.area_total_m2} m²`
-                  : null
-              }
-            />
-            <Field label="Quartos" value={property.bedrooms} />
-            <Field
-              label="Endereço"
-              value={property.address_full}
-              className="col-span-full"
-            />
-            <Field
-              label="Avaliação"
-              value={formatBRL(property.appraisal_value)}
-            />
-            <Field
-              label="1ª praça"
-              value={formatBRL(property.minimum_bid_first)}
-            />
-            <Field
-              label="2ª praça"
-              value={formatBRL(property.minimum_bid_second)}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      </div>
 
       {!latestValuation && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Sem avaliação de mercado
-            </CardTitle>
+        <Card className="border-warning/40 bg-warning-50">
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="size-4 text-warning-700" />
+              <CardTitle className="text-sm">
+                Sem avaliação de mercado
+              </CardTitle>
+            </div>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
+          <CardContent className="text-sm text-warning-700">
             Recomendamos rodar a{" "}
             <Link
               href={`/properties/${encodeURIComponent(id)}/valuation`}
-              className="text-primary hover:underline"
+              className="font-medium underline underline-offset-2"
             >
               avaliação de mercado (CMA)
             </Link>{" "}
@@ -130,31 +85,6 @@ export default async function PropertyOpportunityPage({
         opportunityAnalysisId={history[0]?.id ?? null}
         initialLatest={latestDeep}
       />
-    </main>
-  );
-}
-
-function Field({
-  label,
-  value,
-  className,
-  capitalize,
-}: {
-  label: string;
-  value: string | number | null | undefined;
-  className?: string;
-  capitalize?: boolean;
-}) {
-  return (
-    <div className={className}>
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div
-        className={`mt-0.5 text-sm font-medium ${capitalize ? "capitalize" : ""}`}
-      >
-        {value ?? "—"}
-      </div>
     </div>
   );
 }
