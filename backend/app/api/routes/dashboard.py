@@ -191,41 +191,45 @@ async def get_dashboard(
     top_opps = candidates[:top_opportunities]
 
     # ------------------------------------------------------------------ #
-    # Totais (KPIs)
+    # Buckets — listas pré-filtradas para alimentar o painel lateral
+    # interativo do dashboard (cada KPI clicável ↔ uma lista).
     # ------------------------------------------------------------------ #
-    upcoming_30d = sum(
-        1
+    def _has_upcoming_30d(p: dict[str, Any]) -> bool:
+        for key in ("first_auction_at", "second_auction_at"):
+            dt = _parse_date(p.get(key))
+            if dt is not None and now <= dt <= window_end:
+                return True
+        return False
+
+    bucket_all = [_property_summary(p) for p in properties]
+    bucket_upcoming = [_property_summary(p) for p in properties if _has_upcoming_30d(p)]
+    bucket_pending_val = [
+        _property_summary(p) for p in properties if p.get("id") not in valuated_ids
+    ]
+    bucket_pending_opp = [
+        _property_summary(p)
         for p in properties
-        if (
-            (dt := _parse_date(p.get("first_auction_at"))) is not None
-            and now <= dt <= window_end
-        )
-        or (
-            (dt := _parse_date(p.get("second_auction_at"))) is not None
-            and now <= dt <= window_end
-        )
-    )
+        if p.get("id") not in latest_opp_by_property
+    ]
+
+    # ------------------------------------------------------------------ #
+    # Totais (KPIs) — derivados dos buckets para evitar dupla contagem
+    # ------------------------------------------------------------------ #
     with_geocoding = sum(
         1
         for p in properties
         if p.get("latitude") is not None and p.get("longitude") is not None
-    )
-    pending_valuation = sum(
-        1 for p in properties if p.get("id") not in valuated_ids
-    )
-    pending_opportunity = sum(
-        1 for p in properties if p.get("id") not in latest_opp_by_property
     )
     good_opportunities = sum(
         1 for c in candidates if c["verdict"] in _GOOD_VERDICTS
     )
 
     totals = {
-        "properties": len(properties),
+        "properties": len(bucket_all),
         "with_geocoding": with_geocoding,
-        "upcoming_30d": upcoming_30d,
-        "pending_valuation": pending_valuation,
-        "pending_opportunity": pending_opportunity,
+        "upcoming_30d": len(bucket_upcoming),
+        "pending_valuation": len(bucket_pending_val),
+        "pending_opportunity": len(bucket_pending_opp),
         "good_opportunities": good_opportunities,
     }
 
@@ -234,5 +238,11 @@ async def get_dashboard(
         "calendar": calendar_events,
         "top_opportunities": top_opps,
         "upcoming_auctions": upcoming,
+        "buckets": {
+            "all": bucket_all,
+            "upcoming_30d": bucket_upcoming,
+            "pending_valuation": bucket_pending_val,
+            "pending_opportunity": bucket_pending_opp,
+        },
         "generated_at": now.isoformat(),
     }

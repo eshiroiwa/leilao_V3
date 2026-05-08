@@ -7,15 +7,18 @@ import type { Route } from "next";
 import { PropertyImage } from "@/components/PropertyImage";
 import { Badge } from "@/components/ui/badge";
 import type { DashboardCalendarEvent } from "@/lib/api";
-import { formatBRL } from "@/lib/utils";
+import { cn, formatBRL } from "@/lib/utils";
 
 export function AuctionDayPanel({
   date,
   events,
+  nowIso,
 }: {
   /** YYYY-MM-DD */
   date: string;
   events: DashboardCalendarEvent[];
+  /** ISO timestamp do servidor — usado para identificar leilões já encerrados. */
+  nowIso: string;
 }) {
   const dt = new Date(`${date}T12:00:00`);
   const human = dt.toLocaleDateString("pt-BR", {
@@ -51,7 +54,7 @@ export function AuctionDayPanel({
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {events.map((e, i) => (
             <li key={`${e.property_id}-${e.kind}-${i}`}>
-              <AuctionEventCard event={e} />
+              <AuctionEventCard event={e} nowIso={nowIso} />
             </li>
           ))}
         </ul>
@@ -60,30 +63,64 @@ export function AuctionDayPanel({
   );
 }
 
-function AuctionEventCard({ event }: { event: DashboardCalendarEvent }) {
+function AuctionEventCard({
+  event,
+  nowIso,
+}: {
+  event: DashboardCalendarEvent;
+  nowIso: string;
+}) {
   const cityState = [event.city, event.state].filter(Boolean).join(" / ");
   const href =
     `/properties/${encodeURIComponent(event.property_id)}/valuation` as Route;
 
+  // Considera "encerrado" se a data do leilão ficou no passado em
+  // relação ao timestamp gerado no servidor (determinístico e
+  // safe pra hidratação).
+  const isPast = new Date(event.date).getTime() < new Date(nowIso).getTime();
+
   return (
     <Link
       href={href}
-      className="group relative flex flex-col overflow-hidden rounded-xl border bg-card transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+      aria-label={
+        isPast
+          ? `${event.title ?? "Imóvel"} (leilão encerrado)`
+          : event.title ?? undefined
+      }
+      className={cn(
+        "group relative flex flex-col overflow-hidden rounded-xl border bg-card transition-all hover:-translate-y-0.5 hover:shadow-md",
+        isPast
+          ? "border-border opacity-70 saturate-50 hover:border-border hover:opacity-90 hover:saturate-100"
+          : "hover:border-primary/40",
+      )}
     >
       <div className="relative">
         <PropertyImage
           src={event.image_url}
           alt={event.title ?? "Foto do imóvel"}
           aspect="aspect-[16/9]"
-          className="[&_img]:transition-transform [&_img]:duration-500 group-hover:[&_img]:scale-[1.04]"
+          className={cn(
+            "[&_img]:transition-all [&_img]:duration-500 group-hover:[&_img]:scale-[1.04]",
+            isPast && "[&_img]:grayscale group-hover:[&_img]:grayscale-0",
+          )}
         />
-        <div className="absolute left-2 top-2">
+        <div className="absolute left-2 top-2 flex gap-1">
           <Badge
-            variant={event.kind === "first" ? "default" : "warning"}
+            variant={
+              isPast ? "secondary" : event.kind === "first" ? "default" : "warning"
+            }
             className="backdrop-blur-sm"
           >
             {event.kind === "first" ? "1ª praça" : "2ª praça"}
           </Badge>
+          {isPast && (
+            <Badge
+              variant="secondary"
+              className="bg-muted/90 text-muted-foreground backdrop-blur-sm"
+            >
+              Encerrado
+            </Badge>
+          )}
         </div>
         {event.property_type && (
           <div className="absolute right-2 top-2">
@@ -97,7 +134,12 @@ function AuctionEventCard({ event }: { event: DashboardCalendarEvent }) {
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1.5 p-3">
-        <h4 className="line-clamp-2 text-sm font-semibold leading-snug">
+        <h4
+          className={cn(
+            "line-clamp-2 text-sm font-semibold leading-snug",
+            isPast && "text-muted-foreground",
+          )}
+        >
           {event.title ?? "Imóvel sem título"}
         </h4>
         {cityState && (
@@ -110,11 +152,21 @@ function AuctionEventCard({ event }: { event: DashboardCalendarEvent }) {
           <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             Valor mínimo
           </span>
-          <span className="text-sm font-semibold tabular-nums text-primary-700">
+          <span
+            className={cn(
+              "text-sm font-semibold tabular-nums",
+              isPast ? "text-muted-foreground" : "text-primary-700",
+            )}
+          >
             {formatBRL(event.value)}
           </span>
         </div>
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-primary-700 opacity-0 transition-opacity group-hover:opacity-100">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 text-[11px] font-medium opacity-0 transition-opacity group-hover:opacity-100",
+            isPast ? "text-muted-foreground" : "text-primary-700",
+          )}
+        >
           Abrir avaliação <ArrowRight className="size-3" />
         </span>
       </div>

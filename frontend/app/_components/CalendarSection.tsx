@@ -74,7 +74,11 @@ export function CalendarSection({
         onSelectDate={setSelectedDate}
         nowIso={nowIso}
       />
-      <AuctionDayPanel date={selectedDate} events={dayEvents} />
+      <AuctionDayPanel
+        date={selectedDate}
+        events={dayEvents}
+        nowIso={nowIso}
+      />
     </div>
   );
 }

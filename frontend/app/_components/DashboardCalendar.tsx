@@ -110,28 +110,30 @@ export function DashboardCalendar({
   const monthLabel = `${MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}`;
 
   return (
-    <div className="rounded-2xl border bg-card p-4 sm:p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+    <div className="rounded-2xl border bg-card p-3 sm:p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             Calendário de leilões
           </p>
-          <h3 className="text-base font-semibold capitalize tracking-tight">
+          <h3 className="truncate text-sm font-semibold capitalize tracking-tight">
             {monthLabel}
           </h3>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             variant="outline"
             size="icon"
+            className="size-7"
             onClick={() => setAnchor((a) => addMonths(a, -1))}
             aria-label="Mês anterior"
           >
-            <ChevronLeft className="size-4" />
+            <ChevronLeft className="size-3.5" />
           </Button>
           <Button
             variant="outline"
             size="sm"
+            className="h-7 px-2 text-xs"
             onClick={() => setAnchor(startOfMonth(new Date(nowIso)))}
           >
             Hoje
@@ -139,23 +141,24 @@ export function DashboardCalendar({
           <Button
             variant="outline"
             size="icon"
+            className="size-7"
             onClick={() => setAnchor((a) => addMonths(a, 1))}
             aria-label="Próximo mês"
           >
-            <ChevronRight className="size-4" />
+            <ChevronRight className="size-3.5" />
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
         {WEEKDAYS.map((w) => (
-          <div key={w} className="py-1">
+          <div key={w} className="py-0.5">
             {w}
           </div>
         ))}
       </div>
 
-      <div className="grid grid-cols-7 gap-1">
+      <div className="grid grid-cols-7 gap-0.5">
         {cells.map((d) => {
           const key = ymd(d);
           const inMonth = d.getMonth() === anchor.getMonth();
@@ -172,7 +175,7 @@ export function DashboardCalendar({
               disabled={!has}
               aria-pressed={isSelected}
               className={cn(
-                "relative aspect-square rounded-lg border text-xs transition-colors",
+                "relative flex h-9 flex-col items-center justify-center gap-0.5 rounded-md border text-xs transition-colors",
                 inMonth ? "" : "opacity-40",
                 has
                   ? "cursor-pointer hover:border-primary/50 hover:bg-primary-50"
@@ -191,40 +194,38 @@ export function DashboardCalendar({
                   : undefined
               }
             >
-              <span className="absolute left-1.5 top-1 text-[11px] font-medium">
+              <span className="text-[11px] font-medium leading-none">
                 {d.getDate()}
               </span>
-              {has && (
-                <span className="absolute inset-x-0 bottom-1 flex items-center justify-center gap-0.5">
+              {has ? (
+                <span
+                  className="flex h-1.5 items-center justify-center gap-0.5"
+                  aria-hidden="true"
+                >
                   {counts!.first > 0 && (
-                    <span
-                      className="size-1.5 rounded-full bg-primary"
-                      aria-label={`${counts!.first} 1ª praça`}
-                    />
+                    <span className="size-1.5 rounded-full bg-primary" />
                   )}
                   {counts!.second > 0 && (
-                    <span
-                      className="size-1.5 rounded-full bg-warning"
-                      aria-label={`${counts!.second} 2ª praça`}
-                    />
+                    <span className="size-1.5 rounded-full bg-warning" />
                   )}
                 </span>
+              ) : (
+                <span className="h-1.5" aria-hidden="true" />
               )}
             </button>
           );
         })}
       </div>
 
-      <div className="mt-3 flex items-center gap-3 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="size-2 rounded-full bg-primary" />
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-primary" />
           1ª praça
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="size-2 rounded-full bg-warning" />
+        <span className="inline-flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-warning" />
           2ª praça
         </span>
-        <span className="ml-auto">Selecione uma data para ver os leilões.</span>
       </div>
     </div>
   );

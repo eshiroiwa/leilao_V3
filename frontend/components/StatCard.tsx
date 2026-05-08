@@ -44,6 +44,10 @@ export type StatCardProps = {
   icon?: LucideIcon;
   tone?: Tone;
   className?: string;
+  /** Quando definido, o card vira um botão clicável. */
+  onClick?: () => void;
+  /** Marca o card como ativo (filtro selecionado). */
+  selected?: boolean;
 };
 
 export function StatCard({
@@ -53,13 +57,26 @@ export function StatCard({
   icon: Icon,
   tone = "primary",
   className,
+  onClick,
+  selected,
 }: StatCardProps) {
   const style = TONE_STYLES[tone];
+  const interactive = typeof onClick === "function";
+
+  const Comp = (interactive ? "button" : "div") as "button" | "div";
 
   return (
-    <div
+    <Comp
+      type={interactive ? "button" : undefined}
+      onClick={onClick}
+      aria-pressed={interactive ? !!selected : undefined}
       className={cn(
-        "group relative overflow-hidden rounded-xl border bg-card p-5 transition-all hover:shadow-md hover:-translate-y-0.5",
+        "group relative overflow-hidden rounded-xl border bg-card p-5 text-left transition-all",
+        interactive
+          ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          : "hover:-translate-y-0.5 hover:shadow-md",
+        selected &&
+          "ring-2 ring-primary border-primary shadow-md -translate-y-0.5",
         className,
       )}
     >
@@ -98,6 +115,6 @@ export function StatCard({
           </div>
         )}
       </div>
-    </div>
+    </Comp>
   );
 }

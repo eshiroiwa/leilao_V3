@@ -1,24 +1,11 @@
-import {
-  AlertTriangle,
-  ArrowRight,
-  Building2,
-  CalendarClock,
-  CheckCircle2,
-  ClipboardList,
-  MapPin,
-  PlusCircle,
-  Sparkles,
-} from "lucide-react";
+import { ArrowRight, CheckCircle2, PlusCircle } from "lucide-react";
 import Link from "next/link";
 
-import { StatCard } from "@/components/StatCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, type DashboardResponse } from "@/lib/api";
 
-import { CalendarSection } from "./_components/CalendarSection";
-import { TopOpportunitiesList } from "./_components/TopOpportunitiesList";
-import { UpcomingAuctionsList } from "./_components/UpcomingAuctionsList";
+import { DashboardBody } from "./_components/DashboardBody";
 
 export const dynamic = "force-dynamic";
 
@@ -73,64 +60,6 @@ export default async function HomePage() {
         </div>
       )}
 
-      {/* KPIs */}
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard
-          label="Imóveis cadastrados"
-          value={totals?.properties ?? 0}
-          hint={
-            totals
-              ? `${totals.with_geocoding} com geo`
-              : "—"
-          }
-          icon={Building2}
-          tone="primary"
-        />
-        <StatCard
-          label="Leilões em 30 dias"
-          value={totals?.upcoming_30d ?? 0}
-          hint="Janela de oportunidade"
-          icon={CalendarClock}
-          tone="info"
-        />
-        <StatCard
-          label="Sem avaliação"
-          value={totals?.pending_valuation ?? 0}
-          hint="Pendentes de CMA"
-          icon={ClipboardList}
-          tone={
-            (totals?.pending_valuation ?? 0) > 0 ? "warning" : "success"
-          }
-        />
-        <StatCard
-          label="Sem oportunidade"
-          value={totals?.pending_opportunity ?? 0}
-          hint="Pendentes de análise"
-          icon={AlertTriangle}
-          tone={
-            (totals?.pending_opportunity ?? 0) > 0 ? "warning" : "success"
-          }
-        />
-        <StatCard
-          label="Boas oportunidades"
-          value={totals?.good_opportunities ?? 0}
-          hint="Verdict ≥ ressalvas"
-          icon={Sparkles}
-          tone="success"
-        />
-        <StatCard
-          label="Com geo"
-          value={totals?.with_geocoding ?? 0}
-          hint={
-            totals && totals.properties > 0
-              ? `${Math.round((totals.with_geocoding / totals.properties) * 100)}%`
-              : "—"
-          }
-          icon={MapPin}
-          tone="info"
-        />
-      </section>
-
       {isEmpty ? (
         <section className="rounded-2xl border border-dashed bg-card p-10 text-center">
           <CheckCircle2 className="mx-auto size-8 text-muted-foreground" />
@@ -149,22 +78,7 @@ export default async function HomePage() {
           </div>
         </section>
       ) : (
-        <>
-          {/* Calendário + Top oportunidades */}
-          <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-            <CalendarSection
-              events={data!.calendar}
-              nowIso={data!.generated_at}
-            />
-            <TopOpportunitiesList items={data!.top_opportunities} />
-          </section>
-
-          {/* Próximos leilões cronológico */}
-          <UpcomingAuctionsList
-            items={data!.upcoming_auctions}
-            nowIso={data!.generated_at}
-          />
-        </>
+        <DashboardBody data={data!} />
       )}
     </div>
   );

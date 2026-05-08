@@ -387,11 +387,19 @@ export type DashboardTotals = {
   good_opportunities: number;
 };
 
+export type DashboardBuckets = {
+  all: DashboardPropertySummary[];
+  upcoming_30d: DashboardPropertySummary[];
+  pending_valuation: DashboardPropertySummary[];
+  pending_opportunity: DashboardPropertySummary[];
+};
+
 export type DashboardResponse = {
   totals: DashboardTotals;
   calendar: DashboardCalendarEvent[];
   top_opportunities: DashboardOpportunity[];
   upcoming_auctions: DashboardCalendarEvent[];
+  buckets: DashboardBuckets;
   generated_at: string;
 };
 
