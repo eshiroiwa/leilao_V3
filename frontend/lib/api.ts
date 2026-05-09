@@ -92,10 +92,14 @@ export type Property = {
   source_url: string;
   auctioneer_id: string | null;
   auctioneer_lot_id: string | null;
+  /** Nome do leiloeiro extraído do edital (texto livre). Se preenchido,
+   *  o AGENTE 3 entende que existe leiloeiro e cobra comissão. */
+  auctioneer_name: string | null;
   title: string | null;
   description: string | null;
   property_type: string | null;
   image_url: string | null;
+  condo_name: string | null;
   address_full: string | null;
   street: string | null;
   number: string | null;
@@ -198,6 +202,7 @@ export type OpportunityAssumptions = {
   auctioneer_fee_source:
     | "edital"
     | "caixa_zero"
+    | "no_auctioneer"
     | "default"
     | "override";
   realtor_fee_pct: number;
@@ -449,6 +454,17 @@ export const api = {
   deleteProperty: (id: string) =>
     request<void>(`/api/v1/properties/${encodeURIComponent(id)}`, {
       method: "DELETE",
+    }),
+
+  /**
+   * Patch parcial num imóvel. Aceita só os campos da whitelist do backend
+   * (`PropertyPatch`): hoje é apenas ``condo_name``. String vazia/só-espaço
+   * limpa o campo (grava ``null``).
+   */
+  patchProperty: (id: string, payload: { condo_name?: string | null }) =>
+    request<Property>(`/api/v1/properties/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
     }),
 
   // ===== AGENTE 2 (CMA) =====

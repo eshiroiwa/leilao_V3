@@ -59,14 +59,19 @@ export function OpportunityForm({
   const itbiDefaultLabel = itbiInfo.exact
     ? "tabela do município"
     : "default de mercado";
+  const hasAuctioneer =
+    !!property.auctioneer_id || !!(property.auctioneer_name || "").trim();
   const auctioneerDefault = auctioneerFeePctFor(
     property.auctioneer_fee_pct,
+    hasAuctioneer,
     null,
   );
   const auctioneerDefaultLabel =
     property.auctioneer_fee_pct != null
       ? "do edital"
-      : "default de mercado";
+      : !hasAuctioneer
+        ? "sem leiloeiro"
+        : "default de mercado";
 
   return (
     <Card>

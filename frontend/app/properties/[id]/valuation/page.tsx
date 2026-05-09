@@ -1,6 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { api, type Property, type Valuation } from "@/lib/api";
 
+import { CondoNameEditor } from "./_components/CondoNameEditor";
 import { ValuationActions } from "./_components/ValuationActions";
 import { ValuationDetailView } from "./_components/ValuationDetailView";
 
@@ -39,6 +40,12 @@ export default async function PropertyValuationPage({
         </div>
         <ValuationActions propertyId={id} />
       </div>
+
+      <CondoNameEditor
+        propertyId={id}
+        initialValue={property.condo_name}
+        propertyType={property.property_type}
+      />
 
       {valuations.length === 0 ? (
         <Card>

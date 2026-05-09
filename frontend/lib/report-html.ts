@@ -56,13 +56,20 @@ const esc = (s: unknown): string => {
 const STYLES = `
 :root{
   --bg:#fafafa; --card:#ffffff; --fg:#0f172a; --muted:#64748b;
-  --border:#e2e8f0; --primary:#2563eb; --success:#16a34a;
-  --warning:#d97706; --danger:#dc2626; --accent:#1e40af;
+  --border:#e2e8f0; --primary:#2563eb; --primary-50:#eff6ff;
+  --primary-100:#dbeafe; --primary-700:#1d4ed8;
+  --success:#16a34a; --success-50:#f0fdf4; --success-100:#dcfce7;
+  --success-700:#15803d;
+  --warning:#d97706; --warning-50:#fffbeb;
+  --danger:#dc2626; --danger-50:#fef2f2; --danger-100:#fee2e2;
+  --danger-700:#b91c1c;
+  --accent:#1e40af;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
-  font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-.wrap{max-width:1100px;margin:0 auto;padding:24px}
+  font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  font-feature-settings:"tnum" 1}
+.wrap{max-width:1180px;margin:0 auto;padding:24px}
 .section{background:var(--card);border:1px solid var(--border);border-radius:12px;
   padding:20px;margin-bottom:18px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
 h1{font-size:24px;margin:0 0 4px;font-weight:600}
@@ -78,7 +85,8 @@ h3{font-size:14px;margin:0 0 6px;font-weight:600;text-transform:uppercase;
 .tag.muted{color:var(--muted);background:#f1f5f9}
 .grid-2{display:grid;grid-template-columns:280px 1fr;gap:18px}
 @media(max-width:720px){.grid-2{grid-template-columns:1fr}}
-.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:980px){.grid-3{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid-3{grid-template-columns:1fr}}
 .field{padding:6px 0}
 .field-label{font-size:11px;text-transform:uppercase;letter-spacing:.04em;
@@ -86,23 +94,67 @@ h3{font-size:14px;margin:0 0 6px;font-weight:600;text-transform:uppercase;
 .field-value{font-size:14px;font-weight:500;margin-top:2px}
 .thumb{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;
   border:1px solid var(--border);background:#f1f5f9}
-.scenario{border:1px solid var(--border);border-radius:10px;padding:14px;
-  background:#fafafa}
-.scenario h4{font-size:12px;margin:0 0 10px;text-transform:uppercase;
-  letter-spacing:.04em;color:var(--muted)}
-.scenario.realista{border-color:var(--accent);background:#eff6ff}
-.scenario .row{display:flex;justify-content:space-between;padding:3px 0;
-  font-size:13px;border-bottom:1px dashed #e2e8f0}
-.scenario .row:last-child{border-bottom:none}
-.scenario .row strong{font-weight:600}
-.scenario .row.profit strong{color:var(--success)}
-.scenario .row.loss strong{color:var(--danger)}
-.scenario .roi{font-size:22px;font-weight:700;margin:8px 0 4px}
-.scenario .roi.pos{color:var(--success)} .scenario .roi.neg{color:var(--danger)}
+
+/* ============================================================
+   Cenários — espelham o ScenarioCards do frontend
+   ============================================================ */
+.scenario{position:relative;overflow:hidden;background:var(--card);
+  border:1px solid var(--border);border-radius:12px;padding:14px 14px 14px 18px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.scenario.highlight{box-shadow:0 4px 12px rgba(37,99,235,.10),0 1px 2px rgba(15,23,42,.04);
+  border-color:rgba(37,99,235,.30)}
+.scenario .bar{position:absolute;left:0;top:0;bottom:0;width:4px}
+.scenario.s-pessimista .bar{background:var(--danger)}
+.scenario.s-realista   .bar{background:var(--primary)}
+.scenario.s-otimista   .bar{background:var(--success)}
+.scenario .header{display:flex;flex-wrap:wrap;align-items:baseline;
+  justify-content:space-between;gap:8px;margin-bottom:10px}
+.scenario .chip{display:inline-flex;padding:2px 8px;border-radius:999px;
+  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.scenario.s-pessimista .chip{color:var(--danger-700);background:var(--danger-100)}
+.scenario.s-realista   .chip{color:var(--primary-700);background:var(--primary-100)}
+.scenario.s-otimista   .chip{color:var(--success-700);background:var(--success-100)}
+.scenario .ref-tag{font-size:10px;font-weight:500;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--primary-700)}
+.scenario .sale{font-size:12px;color:var(--muted)}
+.scenario .summary{border:1px solid;border-radius:10px;padding:10px 12px;margin-top:4px}
+.scenario.profit .summary{background:var(--success-50);border-color:rgba(22,163,74,.20)}
+.scenario.loss   .summary{background:var(--danger-50);border-color:rgba(220,38,38,.20)}
+.scenario .summary .line{display:flex;align-items:baseline;justify-content:space-between}
+.scenario .summary .line + .line{margin-top:2px}
+.scenario .summary .lbl{font-size:11px;color:var(--muted)}
+.scenario .summary .val{font-weight:600;font-size:18px}
+.scenario .summary .val.small{font-size:13px;font-weight:500}
+.scenario.profit .summary .val{color:var(--success-700)}
+.scenario.loss   .summary .val{color:var(--danger-700)}
+.scenario .block{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.scenario .block .row{display:flex;align-items:baseline;justify-content:space-between;
+  font-size:12px;padding:1px 0}
+.scenario .block .row .lbl{color:var(--muted)}
+.scenario .block .row .val{font-weight:500;color:var(--fg)}
+.scenario .block .row.bold .val{font-weight:700}
+.scenario .block.muted-block .row .val{color:var(--muted);font-weight:400}
 .warnings{margin-top:10px;display:flex;flex-direction:column;gap:6px}
 .warnings li{list-style:none;padding:6px 10px;border-radius:6px;font-size:12px;
   border:1px solid rgba(217,119,6,.4);background:rgba(217,119,6,.08);
   color:#92400e}
+.assumptions{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:10px;margin-top:12px}
+.assumptions .tile{border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;background:#fafafa}
+.assumptions .tile .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--muted)}
+.assumptions .tile .val{font-size:14px;font-weight:600;margin-top:2px}
+.assumptions .tile .src{font-size:10px;color:var(--muted);margin-top:1px}
+.maxbid{margin-top:14px;padding:12px 14px;border:1px solid rgba(37,99,235,.25);
+  background:var(--primary-50);border-radius:10px;display:flex;
+  align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.maxbid .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--primary-700);font-weight:600}
+.maxbid .val{font-size:20px;font-weight:700;color:var(--primary-700)}
+.maxbid .sub{font-size:11px;color:var(--muted);margin-top:2px}
+.maxbid.unreached{background:#fff7ed;border-color:rgba(217,119,6,.30)}
+.maxbid.unreached .lbl,.maxbid.unreached .val{color:#9a3412}
 #map{width:100%;height:520px;border-radius:8px;background:#e2e8f0;
   position:relative;overflow:hidden}
 .map-fallback{display:flex;align-items:center;justify-content:center;
@@ -143,35 +195,62 @@ table.kvt td:first-child{color:var(--muted);width:160px}
 // Templates HTML
 // =============================================================================
 function renderProperty(property: Property): string {
+  const fmtArea = (v: number | null | undefined): string =>
+    v != null && Number.isFinite(v) ? `${v} m²` : "—";
+  const fmtDate = (iso: string | null | undefined): string => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString("pt-BR", {
+        dateStyle: "short",
+        timeStyle: "short",
+      });
+    } catch {
+      return iso;
+    }
+  };
+
+  // Mostra "Construída / Total" só quando os dois valores existem e
+  // diferem (caso típico de apartamento Caixa). Caso contrário usa o
+  // que estiver disponível.
+  const areaLabel =
+    property.area_built_m2 != null &&
+    property.area_total_m2 != null &&
+    property.area_built_m2 !== property.area_total_m2
+      ? `${fmtArea(property.area_built_m2)} construída · ${fmtArea(property.area_total_m2)} total`
+      : fmtArea(property.area_total_m2 ?? property.area_built_m2);
+
   const fields: Array<[string, string]> = [
     ["Tipo", esc(property.property_type ?? "—")],
+    ["Área", areaLabel],
+    ["Quartos", property.bedrooms != null ? String(property.bedrooms) : "—"],
+    ["Banheiros", property.bathrooms != null ? String(property.bathrooms) : "—"],
     [
-      "Área total",
-      property.area_total_m2 != null
-        ? `${property.area_total_m2} m²`
-        : "—",
+      "Vagas",
+      property.parking_spaces != null ? String(property.parking_spaces) : "—",
     ],
-    [
-      "Quartos",
-      property.bedrooms != null ? String(property.bedrooms) : "—",
-    ],
-    [
-      "Banheiros",
-      property.bathrooms != null ? String(property.bathrooms) : "—",
-    ],
-    ["Vagas", property.parking_spaces != null ? String(property.parking_spaces) : "—"],
     ["Avaliação (edital)", fmtBRL(property.appraisal_value)],
     ["1ª praça", fmtBRL(property.minimum_bid_first)],
     ["2ª praça", fmtBRL(property.minimum_bid_second)],
-    [
-      "Ocupação",
-      esc(property.occupancy_status ?? "—"),
-    ],
-    [
-      "Riscos / ônus",
-      "—",
-    ],
+    ["Data 1ª praça", esc(fmtDate(property.first_auction_at))],
+    ["Data 2ª praça", esc(fmtDate(property.second_auction_at))],
+    ["Ocupação", esc(property.occupancy_status ?? "—")],
+    ["Status legal", esc(property.legal_status ?? "—")],
   ];
+  if (property.condo_name) {
+    fields.unshift(["Condomínio", esc(property.condo_name)]);
+  }
+  if (property.auctioneer_name) {
+    fields.push(["Leiloeiro", esc(property.auctioneer_name)]);
+  }
+  if (property.auctioneer_lot_id) {
+    fields.push(["Nº do lote", esc(property.auctioneer_lot_id)]);
+  }
+  if (property.iptu_arrears && property.iptu_arrears > 0) {
+    fields.push(["IPTU em atraso (edital)", fmtBRL(property.iptu_arrears)]);
+  }
+  if (property.condo_arrears && property.condo_arrears > 0) {
+    fields.push(["Condomínio em atraso (edital)", fmtBRL(property.condo_arrears)]);
+  }
 
   return `
 <section class="section">
@@ -210,42 +289,78 @@ function renderProperty(property: Property): string {
 </section>`;
 }
 
-function renderScenario(
-  s: OpportunityScenario,
-  label: string,
-  highlight = false,
-): string {
-  const profitClass = s.net_profit >= 0 ? "profit" : "loss";
-  const roiClass = s.net_roi_pct >= 0 ? "pos" : "neg";
-  const cls = `scenario${highlight ? " realista" : ""}`;
+/**
+ * Renderiza um card de cenário no MESMO formato do ``ScenarioCards``
+ * do frontend:
+ *
+ *   1. Header: chip do cenário, tag "referência" para o realista, e
+ *      "Venda R$ X" à direita.
+ *   2. Caixa colorida (verde/vermelha) com Lucro líquido + ROI líquido.
+ *   3. Bloco de custos: Lance, Comissão, ITBI, Registro, IPTU/condo
+ *      atrasados (apenas quando > 0), Reforma e Outros (idem), e o
+ *      Custo de aquisição em negrito.
+ *   4. Bloco "muted" pós-venda: Corretor, IR, Lucro bruto, ROI bruto.
+ */
+function renderScenario(s: OpportunityScenario, highlight = false): string {
+  const META: Record<
+    OpportunityScenario["label"],
+    { label: string; cls: string }
+  > = {
+    pessimista: { label: "Pessimista", cls: "s-pessimista" },
+    realista: { label: "Realista", cls: "s-realista" },
+    otimista: { label: "Otimista", cls: "s-otimista" },
+  };
+  const m = META[s.label];
+  const isProfit = s.net_profit >= 0;
+  const profitCls = isProfit ? "profit" : "loss";
+  const cls = `scenario ${m.cls} ${profitCls}${highlight ? " highlight" : ""}`;
+
+  // Linha condicional ("só mostra se > 0") espelhando o frontend.
+  const optRow = (label: string, value: number): string =>
+    value > 0
+      ? `<div class="row"><span class="lbl">${esc(label)}</span><span class="val">${fmtBRL(value)}</span></div>`
+      : "";
+
   return `
 <div class="${cls}">
-  <h4>${esc(label)}</h4>
-  <div class="row"><span>Preço de venda</span><strong>${fmtBRL(
-    s.sale_price,
-  )}</strong></div>
-  <div class="row"><span>Lance</span><strong>${fmtBRL(s.bid)}</strong></div>
-  <div class="row"><span>Comissão leiloeiro</span><strong>${fmtBRL(
-    s.auctioneer_fee,
-  )}</strong></div>
-  <div class="row"><span>ITBI</span><strong>${fmtBRL(s.itbi)}</strong></div>
-  <div class="row"><span>Reforma</span><strong>${fmtBRL(
-    s.renovation_cost,
-  )}</strong></div>
-  <div class="row"><span>Outros + atrasados</span><strong>${fmtBRL(
-    s.other_costs + s.iptu_arrears + s.condo_arrears,
-  )}</strong></div>
-  <div class="row"><span>Custo total</span><strong>${fmtBRL(
-    s.total_acquisition_cost,
-  )}</strong></div>
-  <div class="row"><span>Imposto de renda</span><strong>${fmtBRL(
-    s.income_tax,
-  )}</strong></div>
-  <div class="row ${profitClass}"><span>Lucro líquido</span><strong>${fmtBRL(
-    s.net_profit,
-  )}</strong></div>
-  <div class="roi ${roiClass}">ROI ${fmtPct(s.net_roi_pct)}</div>
-  <div class="muted">ROI bruto ${fmtPct(s.gross_roi_pct)}</div>
+  <span class="bar" aria-hidden="true"></span>
+  <div class="header">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="chip">${esc(m.label)}</span>
+      ${highlight ? '<span class="ref-tag">referência</span>' : ""}
+    </div>
+    <span class="sale">Venda ${fmtBRL(s.sale_price)}</span>
+  </div>
+
+  <div class="summary">
+    <div class="line">
+      <span class="lbl">Lucro líquido</span>
+      <span class="val">${fmtBRL(s.net_profit)}</span>
+    </div>
+    <div class="line">
+      <span class="lbl">ROI líquido</span>
+      <span class="val small">${fmtPct(s.net_roi_pct)}</span>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="row"><span class="lbl">Lance</span><span class="val">${fmtBRL(s.bid)}</span></div>
+    <div class="row"><span class="lbl">Comissão leiloeiro</span><span class="val">${fmtBRL(s.auctioneer_fee)}</span></div>
+    <div class="row"><span class="lbl">ITBI</span><span class="val">${fmtBRL(s.itbi)}</span></div>
+    <div class="row"><span class="lbl">Registro</span><span class="val">${fmtBRL(s.registration)}</span></div>
+    ${optRow("IPTU atrasado", s.iptu_arrears)}
+    ${optRow("Condomínio atrasado", s.condo_arrears)}
+    ${optRow("Reforma", s.renovation_cost)}
+    ${optRow("Outros", s.other_costs)}
+    <div class="row bold"><span class="lbl">Custo aquisição</span><span class="val">${fmtBRL(s.total_acquisition_cost)}</span></div>
+  </div>
+
+  <div class="block muted-block">
+    <div class="row"><span class="lbl">Corretor (venda)</span><span class="val">${fmtBRL(s.realtor_fee)}</span></div>
+    <div class="row"><span class="lbl">Imposto de renda</span><span class="val">${fmtBRL(s.income_tax)}</span></div>
+    <div class="row"><span class="lbl">Lucro bruto</span><span class="val">${fmtBRL(s.gross_profit)}</span></div>
+    <div class="row"><span class="lbl">ROI bruto</span><span class="val">${fmtPct(s.gross_roi_pct)}</span></div>
+  </div>
 </div>`;
 }
 
@@ -264,31 +379,100 @@ function renderOpportunity(
     INDETERMINADO: { label: "Indeterminado", cls: "muted" },
   };
   const v = verdictMap[result.verdict];
+
+  // Rótulos das fontes das premissas — espelham o que o usuário vê no
+  // formulário de oportunidade (ITBI/registro/comissão/IR).
+  const ITBI_SRC: Record<string, string> = {
+    city_table: "tabela do município",
+    default: "default",
+    override: "ajuste manual",
+  };
+  const FEE_SRC: Record<string, string> = {
+    edital: "do edital",
+    caixa_zero: "Caixa direta",
+    no_auctioneer: "sem leiloeiro",
+    default: "default 5%",
+    override: "ajuste manual",
+  };
+  const a = result.assumptions;
+  const buyerLabel = result.input.buyer_type === "PJ" ? "PJ" : "PF";
+  const taxBasisLabel =
+    a.income_tax_basis === "sale_price" ? "sobre venda" : "sobre lucro";
+
+  const maxBidBlock =
+    result.max_bid_for_target != null
+      ? `<div class="maxbid">
+          <div>
+            <div class="lbl">Lance máximo para ROI alvo</div>
+            <div class="sub">Maior lance que ainda atinge ${fmtPct(result.input.target_net_roi_pct, 0)} líquido no cenário realista.</div>
+          </div>
+          <div class="val">${fmtBRL(result.max_bid_for_target)}</div>
+        </div>`
+      : `<div class="maxbid unreached">
+          <div>
+            <div class="lbl">Lance máximo para ROI alvo</div>
+            <div class="sub">ROI alvo de ${fmtPct(result.input.target_net_roi_pct, 0)} inalcançável com as premissas atuais — reduza custos ou eleve o preço de venda esperado.</div>
+          </div>
+          <div class="val">—</div>
+        </div>`;
+
   return `
 <section class="section">
   <h2>Análise de oportunidade
     <span class="tag ${v.cls}" style="margin-left:8px">${esc(v.label)}</span>
   </h2>
   <div class="muted">
-    Comprador ${esc(result.input.buyer_type)} · ROI alvo
+    Comprador ${esc(buyerLabel)} · ROI alvo
     ${fmtPct(result.input.target_net_roi_pct, 0)} · Reforma
     ${esc(result.input.renovation_level)} · Imóvel em ${esc(
       property.city ?? "",
     )}/${esc(property.state ?? "")}
   </div>
+
   <div class="grid-3" style="margin-top:14px">
-    ${renderScenario(result.pessimista, "Pessimista")}
-    ${renderScenario(result.realista, "Realista", true)}
-    ${renderScenario(result.otimista, "Otimista")}
+    ${renderScenario(result.pessimista)}
+    ${renderScenario(result.realista, true)}
+    ${renderScenario(result.otimista)}
   </div>
+
+  ${maxBidBlock}
+
   <div style="margin-top:14px">
-    <h3>Lance máximo para ROI alvo</h3>
-    <div class="field-value">${
-      result.max_bid_for_target != null
-        ? fmtBRL(result.max_bid_for_target)
-        : "Inalcançável (reduza custos ou eleve preço de venda)"
-    }</div>
+    <h3>Premissas usadas</h3>
+    <div class="assumptions">
+      <div class="tile">
+        <div class="lbl">ITBI</div>
+        <div class="val">${fmtPct(a.itbi_pct, 2)}</div>
+        <div class="src">${esc(ITBI_SRC[a.itbi_source] ?? a.itbi_source)}</div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Comissão leiloeiro</div>
+        <div class="val">${fmtPct(a.auctioneer_fee_pct, 2)}</div>
+        <div class="src">${esc(FEE_SRC[a.auctioneer_fee_source] ?? a.auctioneer_fee_source)}</div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Registro</div>
+        <div class="val">${fmtPct(a.registration_pct, 2)}</div>
+        <div class="src">cartório</div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Corretor (venda)</div>
+        <div class="val">${fmtPct(a.realtor_fee_pct, 1)}</div>
+        <div class="src">comissão padrão</div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Imposto de renda (${esc(buyerLabel)})</div>
+        <div class="val">${fmtPct(a.income_tax_pct, 1)}</div>
+        <div class="src">${esc(taxBasisLabel)}</div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Reforma (R$/m²)</div>
+        <div class="val">${fmtBRL(a.renovation_per_m2)}</div>
+        <div class="src">${esc(result.input.renovation_level)}</div>
+      </div>
+    </div>
   </div>
+
   ${
     result.warnings.length > 0
       ? `<div style="margin-top:14px"><h3>Pontos de atenção</h3>

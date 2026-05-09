@@ -49,6 +49,7 @@ const ITBI_DEFAULT = 0.03;
 export const REGISTRATION_PCT_DEFAULT = 0.015;
 const AUCTIONEER_FEE_DEFAULT = 0.05;
 const AUCTIONEER_FEE_CAIXA = 0.0;
+const AUCTIONEER_FEE_NO_AUCTIONEER = 0.0;
 const SLUGS_NO_AUCTIONEER_FEE = new Set(["caixa", "caixa-leiloes"]);
 const REALTOR_FEE_PCT = 0.06;
 const IR_PF_PCT = 0.15;
@@ -98,11 +99,24 @@ export function itbiPctFor(
   return v != null ? { pct: v, exact: true } : { pct: ITBI_DEFAULT, exact: false };
 }
 
+/**
+ * Resolve a comissão do leiloeiro com prioridade:
+ *
+ * 1. ``declared`` (do edital, quando o Agente 1 conseguiu extrair).
+ *    Inclusive ``0`` é respeitado.
+ * 2. ``hasAuctioneer === false`` → ``0%``: sem leiloeiro nominal não há
+ *    a quem pagar comissão (regra do mercado: no site da Caixa, "quando
+ *    o nome do leiloeiro está presente significa que existe comissão").
+ * 3. ``slug`` em ``SLUGS_NO_AUCTIONEER_FEE`` → ``0%`` (Caixa Online).
+ * 4. Default ``5%``.
+ */
 export function auctioneerFeePctFor(
   declared: number | null | undefined,
-  slug: string | null | undefined,
+  hasAuctioneer: boolean,
+  slug: string | null | undefined = null,
 ): number {
   if (declared != null && declared >= 0) return declared;
+  if (!hasAuctioneer) return AUCTIONEER_FEE_NO_AUCTIONEER;
   if (slug && SLUGS_NO_AUCTIONEER_FEE.has(slug.trim().toLowerCase())) {
     return AUCTIONEER_FEE_CAIXA;
   }
@@ -480,6 +494,16 @@ export function runAnalysisLocal(args: {
   const registrationPct =
     input.registration_pct_override ?? REGISTRATION_PCT_DEFAULT;
 
+  // Regra: se o imóvel TEM leiloeiro nominal — ``auctioneer_id`` (portal
+  // próprio: Zuk/Mega/Biasi/Sodré-Santoro), ``auctioneer_name`` (pessoa
+  // física que assina o edital, comum em Caixa) ou ``auctioneerSlug``
+  // (atalho passado pelo caller) — cobramos comissão. Nada disso ⇒
+  // venda direta ⇒ 0%.
+  const hasAuctioneer =
+    !!property.auctioneer_id ||
+    !!(property.auctioneer_name || "").trim() ||
+    !!(args.auctioneerSlug || "").trim();
+
   let auctioneerFeePct: number;
   let auctioneerFeeSource: OpportunityAssumptions["auctioneer_fee_source"];
   if (input.auctioneer_fee_pct_override != null) {
@@ -488,6 +512,7 @@ export function runAnalysisLocal(args: {
   } else {
     auctioneerFeePct = auctioneerFeePctFor(
       property.auctioneer_fee_pct,
+      hasAuctioneer,
       args.auctioneerSlug,
     );
     if (
@@ -495,6 +520,8 @@ export function runAnalysisLocal(args: {
       property.auctioneer_fee_pct >= 0
     ) {
       auctioneerFeeSource = "edital";
+    } else if (!hasAuctioneer) {
+      auctioneerFeeSource = "no_auctioneer";
     } else if (auctioneerFeePct === AUCTIONEER_FEE_CAIXA) {
       auctioneerFeeSource = "caixa_zero";
     } else {
@@ -504,12 +531,13 @@ export function runAnalysisLocal(args: {
 
   const renovationCost = renovationCostFor(input.renovation_level, areaM2);
 
-  // Custos fixos
-  const iptuArrears =
-    input.iptu_arrears || property.iptu_arrears || 0;
-  const condoArrears =
-    input.condo_arrears || property.condo_arrears || 0;
-  const otherCosts = input.other_costs || otherCostsDefaultFor(occupancy);
+  // Custos fixos.
+  // ATENÇÃO: usamos ``??`` (não ``||``) para preservar o ``0`` explícito do
+  // usuário. Antes ``input.other_costs || default`` descartava o ``0`` e
+  // voltava ao default — bug reportado: "outros custos = 0 → vira 8000".
+  const iptuArrears = input.iptu_arrears ?? property.iptu_arrears ?? 0;
+  const condoArrears = input.condo_arrears ?? property.condo_arrears ?? 0;
+  const otherCosts = input.other_costs ?? otherCostsDefaultFor(occupancy);
 
   // Cenários — override do usuário tem prioridade sobre a CMA
   let pessP: number, realP: number, otiP: number;
