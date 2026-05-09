@@ -1,4 +1,4 @@
-"""Rotas de leitura e remoção de imóveis."""
+"""Rotas de leitura, edição e remoção de imóveis."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
 from app.services.supabase_service import SupabaseError, get_supabase_service
@@ -14,6 +15,24 @@ from app.services.supabase_service import SupabaseError, get_supabase_service
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/properties", tags=["properties"])
+
+
+class PropertyPatch(BaseModel):
+    """Whitelist do que o usuário pode editar manualmente.
+
+    Mantemos uma whitelist explícita para não permitir, p.ex., trocar o
+    ``source_url`` ou apagar o ``location`` por acidente via PATCH.
+    Campos com valor ``None`` são ignorados (use string vazia para limpar).
+    """
+
+    condo_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Nome do prédio/condomínio. Quando preenchido, o AGENTE 2 "
+            "prioriza listings do MESMO prédio nos comparáveis."
+        ),
+    )
 
 
 @router.get(
@@ -36,6 +55,55 @@ async def list_properties(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+
+
+@router.patch(
+    "/{property_id}",
+    summary="Atualiza campos editáveis de um imóvel (ex.: condo_name)",
+    response_model=dict[str, Any],
+)
+async def patch_property(
+    property_id: UUID, payload: PropertyPatch
+) -> dict[str, Any]:
+    """Patch parcial. Apenas campos definidos em ``PropertyPatch`` são aceitos.
+
+    Tratamos string vazia como "limpar" (grava ``null``) para que o usuário
+    possa apagar um valor pela UI. ``None`` (campo ausente) é ignorado.
+    """
+    sb = get_supabase_service()
+    raw = payload.model_dump(exclude_unset=True)
+
+    # Normaliza strings: trim + transforma "" em None (clear).
+    patch: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(value, str):
+            stripped = value.strip()
+            patch[key] = stripped if stripped else None
+        else:
+            patch[key] = value
+
+    if not patch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nenhum campo válido fornecido.",
+        )
+
+    try:
+        row = await run_in_threadpool(
+            sb.update_property, str(property_id), patch
+        )
+    except SupabaseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Imóvel {property_id} não encontrado.",
+        )
+    return row
 
 
 @router.delete(

@@ -8,6 +8,8 @@ podem ser tunados em ``Settings`` no futuro.
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -30,12 +32,18 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 # ---------------------------------------------------------------------------
 # Similaridade (0–1): peso do comparável no cálculo final.
 # ---------------------------------------------------------------------------
+# Pesos. ``condo`` (mesmo prédio) é o sinal mais forte que existe — ganha
+# 0.25 e desloca peso de distância/área (estes ainda dominam quando não há
+# condo_name). Soma == 1.0.
+#
+# Tipo (apartamento/casa/etc.) entra como hard-filter no ``node_score_similarity``;
+# não duplica peso aqui.
 SIMILARITY_WEIGHTS: dict[str, float] = {
-    "distance": 0.40,
-    "area": 0.30,
-    "bedrooms": 0.15,
+    "distance": 0.30,
+    "area": 0.25,
+    "condo": 0.25,
+    "bedrooms": 0.10,
     "parking": 0.10,
-    "type": 0.05,
 }
 
 # Distância "característica" para o decay exponencial (~63% em 1.5 km).
@@ -69,11 +77,76 @@ def _type_score(target_type: str | None, comp_type: str | None) -> float:
     return 1.0 if target_type.strip().lower() == comp_type.strip().lower() else 0.0
 
 
+def normalize_condo_name(name: str | None) -> str:
+    """Normaliza nome de condomínio para comparação tolerante.
+
+    Remove acentos, pontuação, prefixos genéricos ("edificio", "residencial",
+    "condominio"), lowercase e colapsa espaços. Ex.::
+
+        "Residencial Vila Verde"  → "vila verde"
+        "EDIFÍCIO PARK Crispim"   → "park crispim"
+        "Cond. Cristal das Águas" → "cristal das aguas"
+    """
+    if not name:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", name)
+    no_accents = "".join(c for c in nfkd if not unicodedata.combining(c))
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", no_accents).strip().lower()
+    tokens = cleaned.split()
+    while tokens and tokens[0] in _CONDO_PREFIXES:
+        tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+_CONDO_PREFIXES: frozenset[str] = frozenset(
+    {
+        "edificio", "edif", "ed",
+        "residencial", "res",
+        "condominio", "cond",
+        "conjunto",
+    }
+)
+
+
+def condo_match_score(
+    target_condo: str | None, listing_condo: str | None
+) -> float:
+    """Retorna 1.0 se os nomes batem (após normalização), 0.0 senão.
+
+    Match é simétrico e tolerante a:
+
+      * acentos, pontuação, capitalização;
+      * prefixos genéricos ("Edifício", "Residencial", "Cond.", etc.);
+      * tokens extras em uma das pontas (ex.: ``"Park Crispim Apto 12"``
+        casa com ``"Park Crispim"`` quando todos os tokens da menor estão
+        contidos na maior).
+
+    Quando um dos lados está vazio, retorna 0.0 (nunca puxa o peso pra
+    cima sem evidência).
+    """
+    a = normalize_condo_name(target_condo)
+    b = normalize_condo_name(listing_condo)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    ta, tb = set(a.split()), set(b.split())
+    if not ta or not tb:
+        return 0.0
+    # Match "contido": todos os tokens do menor estão no maior. Exige
+    # pelo menos 2 tokens para evitar falsos positivos com nomes de 1
+    # palavra ("Park", "Solar") que aparecem em vários prédios.
+    smaller, larger = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if len(smaller) >= 2 and smaller.issubset(larger):
+        return 1.0
+    return 0.0
+
+
 def similarity_score(target: dict[str, Any], comp: dict[str, Any]) -> float:
     """Calcula similaridade 0–1 entre o imóvel-alvo e um candidato.
 
     Espera dicts com chaves ``latitude``, ``longitude``, ``area_total_m2``,
-    ``bedrooms``, ``parking_spaces``, ``property_type`` (todas opcionais).
+    ``bedrooms``, ``parking_spaces``, ``condo_name`` (todas opcionais).
     """
     distance_m = None
     if (
@@ -92,9 +165,9 @@ def similarity_score(target: dict[str, Any], comp: dict[str, Any]) -> float:
     parts: dict[str, float] = {
         "distance": _distance_score(distance_m),
         "area": _area_score(target.get("area_total_m2"), comp.get("area_total_m2")),
+        "condo": condo_match_score(target.get("condo_name"), comp.get("condo_name")),
         "bedrooms": _count_score(target.get("bedrooms"), comp.get("bedrooms")),
         "parking": _count_score(target.get("parking_spaces"), comp.get("parking_spaces")),
-        "type": _type_score(target.get("property_type"), comp.get("property_type")),
     }
     score = sum(SIMILARITY_WEIGHTS[k] * v for k, v in parts.items())
     return max(0.0, min(1.0, score))
@@ -168,6 +241,8 @@ __all__ = [
     "haversine_m",
     "similarity_score",
     "reliability_score",
+    "condo_match_score",
+    "normalize_condo_name",
     "RELIABILITY_THRESHOLD",
     "SIMILARITY_WEIGHTS",
 ]

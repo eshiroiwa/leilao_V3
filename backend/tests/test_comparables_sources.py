@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.comparables.sources.vivareal_zap import VivaRealZapAdapter, find_adapter
+from app.agents.comparables.sources import find_adapter
+from app.agents.comparables.sources.vivareal_zap import VivaRealZapAdapter
 
 ADAPTER = VivaRealZapAdapter()
 

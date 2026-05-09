@@ -110,15 +110,4 @@ class VivaRealZapAdapter(SourceAdapter):
         return m.group(1) if m else None
 
 
-_ADAPTERS: tuple[SourceAdapter, ...] = (VivaRealZapAdapter(),)
-
-
-def find_adapter(url: str) -> SourceAdapter | None:
-    """Devolve o adapter compatível com a URL (ou None)."""
-    for adapter in _ADAPTERS:
-        if adapter.matches(url):
-            return adapter
-    return None
-
-
-__all__ = ["VivaRealZapAdapter", "find_adapter"]
+__all__ = ["VivaRealZapAdapter"]

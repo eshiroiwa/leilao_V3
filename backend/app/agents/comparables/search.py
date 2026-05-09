@@ -125,10 +125,24 @@ _CONDO_STOPWORDS_HEAD: frozenset[str] = frozenset(
 
 
 def detect_condo_name(target: dict[str, Any]) -> str | None:
-    """Tenta extrair o nome do condomínio a partir de title/complement.
+    """Resolve o nome do condomínio do imóvel-alvo.
+
+    Estratégia (em ordem de prioridade):
+
+    1. ``target.condo_name`` (preenchido manualmente pelo usuário ou pelo
+       AGENTE 1 quando consegue extrair) — fonte de verdade autoritativa.
+    2. Heurística por regex em ``title``/``complement``/``description``
+       procurando prefixos "Edifício/Residencial/Condomínio NOME".
 
     Retorna o nome limpo (sem o prefixo "Edifício/Residencial") ou None.
     """
+    # Caminho rápido: usuário/Agente 1 já forneceu o nome.
+    explicit = target.get("condo_name")
+    if isinstance(explicit, str) and explicit.strip():
+        cleaned = explicit.strip(" -,.")
+        if len(cleaned) >= 3:
+            return cleaned
+
     haystacks: list[str] = []
     for key in ("title", "complement", "description"):
         v = target.get(key)
@@ -174,7 +188,21 @@ def detect_condo_name(target: dict[str, Any]) -> str | None:
 # Filtro de site reusado por todas as estratégias. Sempre anexado por
 # ÚLTIMO e nunca é truncado — caso contrário a busca volta sem filtro
 # e traz resultados aleatórios (vimos em produção: `(site:vivareal'`).
-_SITE_FILTER = "(site:vivareal.com.br OR site:zapimoveis.com.br)"
+#
+# Construído dinamicamente a partir dos adapters registrados em
+# ``sources/__init__.py``: para adicionar um portal, basta registrar o
+# adapter — o filtro se atualiza sozinho.
+def _build_site_filter() -> str:
+    from app.agents.comparables.sources import all_domains
+
+    domains = all_domains()
+    if not domains:
+        return ""
+    parts = " OR ".join(f"site:{d}" for d in domains)
+    return f"({parts})"
+
+
+_SITE_FILTER = _build_site_filter()
 
 # Tamanho máx. razoável para o Firecrawl/Google. Antes era 80 — pequeno
 # demais e cortava o filtro de site.
@@ -223,7 +251,23 @@ def build_queries(
         condo = detect_condo_name(target)
         if not condo:
             return []
-        return [_compose_query(f'venda "{condo}" {city} {state}')]
+        # Geramos DUAS queries — combinadas, maximizam recall sem custar
+        # muito (o budget de search costuma permitir 2 queries):
+        #
+        #   1. Com aspas: "EDIFÍCIO X" → casa exato (precision alta).
+        #   2. Sem aspas + bairro: o Google aceita variações de grafia
+        #      (ex.: "EDIF X" no anúncio quando o usuário pôs "Edifício X").
+        #
+        # Anexamos o bairro na 2ª query quando disponível, ajudando o
+        # ranking do Google a priorizar resultados da região certa
+        # (relevante em prédios com nomes comuns como "Solar", "Park", etc).
+        neighborhood = (target.get("neighborhood") or "").strip()
+        queries = [_compose_query(f'venda "{condo}" {city} {state}')]
+        loose_prefix = f"venda {condo} {neighborhood} {city} {state}"
+        loose = _compose_query(loose_prefix)
+        if loose not in queries:
+            queries.append(loose)
+        return queries
 
     if strategy == "street":
         street = (target.get("street") or "").strip()

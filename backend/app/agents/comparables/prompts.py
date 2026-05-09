@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 EXTRACTION_SYSTEM_PROMPT = """\
-Você é um especialista em anúncios imobiliários no Brasil (VivaReal, ZAP).
+Você é um especialista em anúncios imobiliários no Brasil (VivaReal, ZAP,
+ChavesNaMão e similares).
 Sua tarefa: extrair dados estruturados de UM anúncio de venda em Markdown.
 
 Regras OBRIGATÓRIAS:
@@ -65,7 +66,8 @@ def build_extraction_messages(*, url: str, markdown: str) -> list[dict[str, str]
 # extraímos N anúncios numa única chamada LLM.
 # ===========================================================================
 BATCH_EXTRACTION_SYSTEM_PROMPT = """\
-Você é um especialista em anúncios imobiliários no Brasil (VivaReal, ZAP).
+Você é um especialista em anúncios imobiliários no Brasil (VivaReal, ZAP,
+ChavesNaMão e similares).
 Sua tarefa: ler o Markdown de uma PÁGINA DE RESULTADOS DE BUSCA (com vários
 imóveis listados em cards) e extrair UMA LISTA de anúncios estruturados.
 
@@ -79,13 +81,21 @@ REGRAS OBRIGATÓRIAS:
 6. Se a página tiver MAIS de 25 imóveis listados, devolva os primeiros 25.
 7. ⚠ source_url: para CADA anúncio, procure o LINK direto da página
    individual do imóvel. Padrões de onde o link costuma aparecer no
-   markdown do VivaReal/ZAP:
+   markdown dos portais brasileiros:
      • Logo APÓS o botão "[Contatar]" do card.
        Ex.: `[Contatar](https://...) [Veja mais](https://www.vivareal.com.br/imovel/apto-2-quartos-id-2748234907/)`
      • Em links de título do card:
        `[Apartamento 60 m² ...](https://www.vivareal.com.br/imovel/...-id-N/)`
      • Em "Veja mais detalhes", "Ver imóvel", "Detalhes" etc.
-   A URL VÁLIDA SEMPRE termina com `-id-{NÚMERO}/` ou `-id-{NÚMERO}`.
+   FORMATOS de URL VÁLIDOS por portal:
+     • VivaReal/ZAP: `https://www.{vivareal,zapimoveis}.com.br/imovel/...-id-{NÚMERO}/`
+       (termina com `-id-{N}/` ou `-id-{N}`).
+     • ChavesNaMão: `https://www.chavesnamao.com.br/imovel/...{slug}/id-{NÚMERO}/`
+       (termina com `/id-{N}/` ou `/id-{N}` — note a barra ANTES de `id`).
+     • ImovelWeb: `https://www.imovelweb.com.br/propriedades/{slug}-{NÚMERO}.html`
+       (sempre em ``/propriedades/`` e termina com ``-{N>=8 dígitos}.html``).
+   ⚠ Recuse URLs com "para-alugar", "-aluguel-", "-temporada-" ou
+   "lancamento" no slug — são de aluguel/lançamento, não de venda.
    Se NÃO houver link específico daquele anúncio, devolva `source_url=null`
    — NUNCA repita a URL da página de busca, NUNCA invente.
 8. Demais regras de formatação (preço, área, UF, CEP, property_type,

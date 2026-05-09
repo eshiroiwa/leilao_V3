@@ -29,6 +29,7 @@ from app.agents.comparables.prompts import (
 from app.agents.comparables.schemas import ExtractedListing, ListingBatch
 from app.agents.comparables.scoring import (
     RELIABILITY_THRESHOLD,
+    condo_match_score,
     haversine_m,
     reliability_score,
     similarity_score,
@@ -40,7 +41,7 @@ from app.agents.comparables.search import (
     next_strategy,
     radius_plan,
 )
-from app.agents.comparables.sources.vivareal_zap import find_adapter
+from app.agents.comparables.sources import find_adapter
 from app.agents.comparables.state import ComparablesState
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -739,11 +740,23 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
         # — não importa se o ponto APPROXIMATE caiu fora do raio.
         on_same_street = _same_street(listing.get("street"), target.get("street"))
 
+        # Override "mesmo condomínio": prédio é o sinal mais forte.
+        # Quando os nomes batem, o anúncio é um comparable legítimo MESMO
+        # que a geocodificação seja ruim ou caia fora do raio (cada
+        # apartamento do mesmo prédio é literalmente o melhor comparable
+        # possível pro alvo).
+        same_condo = (
+            condo_match_score(
+                target.get("condo_name"), listing.get("condo_name")
+            )
+            == 1.0
+        )
+
         used = True
         reason = None
         if not listing.get("listed_price") or not listing.get("area_total_m2"):
             used, reason = False, "sem preço ou área"
-        elif rel < RELIABILITY_THRESHOLD:
+        elif rel < RELIABILITY_THRESHOLD and not same_condo:
             used, reason = False, f"reliability={rel:.2f} < {RELIABILITY_THRESHOLD}"
         elif not same_type:
             used, reason = False, f"property_type≠{target.get('property_type')}"
@@ -751,6 +764,7 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
             distance_m is not None
             and distance_m > radius_m
             and not on_same_street
+            and not same_condo
         ):
             used, reason = False, f"distance={distance_m:.0f}m > {radius_m}m"
 
@@ -768,9 +782,11 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
                     and distance_m is not None
                     and distance_m > radius_m
                 ),
+                "_same_condo": same_condo,
                 # extra para o pricing logo abaixo
                 "_listed_price": listing.get("listed_price"),
                 "_area_total_m2": listing.get("area_total_m2"),
+                "_condo_name": listing.get("condo_name"),
             }
         )
 
@@ -882,7 +898,12 @@ def node_check_minimum(state: ComparablesState) -> dict[str, Any]:
 # 9) estimate_price — calcula valuation final
 # ---------------------------------------------------------------------------
 def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
-    from app.agents.comparables.pricing import Comparable, estimate_price
+    from app.agents.comparables.pricing import (
+        Comparable,
+        detect_bimodal_ppm2,
+        effective_target_area_m2,
+        estimate_price,
+    )
 
     settings = get_settings()
     scored = state.get("scored_comparables") or []
@@ -897,15 +918,75 @@ def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
         if area <= 0:
             continue
         comps.append(
-            Comparable(listing_id=s["listing_id"], ppm2=price / area, weight=float(s["weight"]))
+            Comparable(
+                listing_id=s["listing_id"],
+                ppm2=price / area,
+                weight=float(s["weight"]),
+                same_building=bool(s.get("_same_condo")),
+            )
         )
 
+    target_area_m2, area_source = effective_target_area_m2(target)
+    legacy_area = target.get("area_total_m2")
+    logger.info(
+        "cma.area.effective",
+        property_type=(target.get("property_type") or "").lower() or None,
+        area_source=area_source,
+        target_area_m2=target_area_m2,
+        legacy_area_total_m2=legacy_area,
+        diverged=(
+            area_source not in (None, "area_total_m2")
+            and legacy_area is not None
+            and target_area_m2 is not None
+            and abs(float(legacy_area) - float(target_area_m2)) > 0.5
+        ),
+    )
+
     val = estimate_price(
-        target_area_m2=target.get("area_total_m2"),
+        target_area_m2=target_area_m2,
         comparables=comps,
         min_acceptable=settings.cma_min_comparables_acceptable,
         min_confident=settings.cma_min_comparables_confident,
+        property_type=target.get("property_type"),
     )
+
+    # Bimodalidade — sinal de que a amostra mistura prédios distintos.
+    # Não rebaixa a confidence aqui (já é responsabilidade do classifier),
+    # mas deixa um warning humano-legível na valuation. O AGENTE 3 lê esse
+    # warning e o usuário vê na UI da CMA.
+    extra_warnings: list[str] = []
+    target_condo = (target.get("condo_name") or "").strip()
+    same_building_count = sum(1 for c in comps if c.same_building)
+    if (
+        same_building_count < 3
+        and detect_bimodal_ppm2(comps, gap_pct=0.30, min_each_side=2)
+    ):
+        if target_condo:
+            extra_warnings.append(
+                f"Comparáveis vêm de prédios com perfis de preço distintos — "
+                f"verifique se '{target_condo}' bate com o prédio do alvo "
+                f"ou refine o nome."
+            )
+        else:
+            extra_warnings.append(
+                "Comparáveis vêm de prédios com perfis de preço distintos — "
+                "informe o nome do condomínio do imóvel-alvo (campo "
+                "'Nome do prédio') para uma estimativa mais precisa."
+            )
+        logger.info(
+            "cma.bimodal.detected",
+            n=len(comps),
+            same_building_count=same_building_count,
+            target_condo=target_condo or None,
+        )
+
+    if val.method == "same_building_median_ppm2":
+        logger.info(
+            "cma.same_building.applied",
+            n=val.comparables_used,
+            confidence=val.confidence,
+            target_condo=target_condo or None,
+        )
 
     # Cap de comparáveis salvos no join (mantém top-N por peso).
     sorted_used = sorted(used, key=lambda s: s["weight"], reverse=True)
@@ -915,6 +996,7 @@ def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
             s["used"] = False
             s["rejection_reason"] = "trim: fora do top-N por peso"
 
+    out_warnings = list(state.get("warnings") or []) + extra_warnings
     return {
         "estimated_price": val.estimated_price,
         "price_lower_bound": val.price_lower_bound,
@@ -922,6 +1004,8 @@ def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
         "ppm2_estimated": val.ppm2_estimated,
         "confidence": val.confidence,
         "scored_comparables": scored,
+        "warnings": out_warnings,
+        "pricing_method": val.method,
     }
 
 
@@ -942,7 +1026,7 @@ def node_persist(state: ComparablesState) -> dict[str, Any]:
         "price_upper_bound": state.get("price_upper_bound"),
         "ppm2_estimated": state.get("ppm2_estimated"),
         "confidence": state.get("confidence", "INSUFFICIENT"),
-        "method": "weighted_median_ppm2",
+        "method": state.get("pricing_method") or "weighted_median_ppm2",
         "comparables_used": n_used,
         "comparables_rejected": n_rejected,
         "search_radius_m": state.get("search_radius_m"),

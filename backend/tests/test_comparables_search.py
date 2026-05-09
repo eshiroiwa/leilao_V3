@@ -89,6 +89,49 @@ def test_detect_condo_name(
         assert expected.lower() in got.lower()
 
 
+def test_detect_condo_name_explicit_overrides_heuristic() -> None:
+    """Quando o usuário (ou Agente 1) preencheu ``condo_name``, o regex
+    em title/description vira fallback inútil — pegamos o explícito."""
+    target = {
+        "title": "Apartamento no Edifício IGNORADO",  # heurística pegaria isso
+        "condo_name": "Park Crispim",
+    }
+    assert detect_condo_name(target) == "Park Crispim"
+
+
+def test_detect_condo_name_explicit_short_falls_back_to_heuristic() -> None:
+    """``condo_name`` muito curto (< 3 chars) é ignorado; heurística entra."""
+    target = {
+        "title": "Apartamento no Edifício Jardim das Acácias",
+        "condo_name": "X",
+    }
+    got = detect_condo_name(target)
+    assert got is not None
+    assert "Jardim das Acácias" in got
+
+
+def test_detect_condo_name_explicit_strips_whitespace() -> None:
+    target = {"condo_name": "  Edifício Park Crispim  ", "title": "Apartamento"}
+    assert detect_condo_name(target) == "Edifício Park Crispim"
+
+
+def test_build_queries_condo_uses_explicit_condo_name() -> None:
+    """Quando ``condo_name`` está preenchido, prevalece sobre o regex."""
+    target = {
+        "city": "Pindamonhangaba",
+        "state": "SP",
+        "neighborhood": "Crispim",
+        "street": "R. das Flores",
+        "property_type": "apartamento",
+        "title": "Apartamento Caixa SFI",  # sem prefixo "Edifício/Residencial"
+        "condo_name": "Park Crispim",
+    }
+    qs = build_queries(target, strategy="condo")
+    assert len(qs) == 2
+    assert '"Park Crispim"' in qs[0]
+    assert "Park Crispim" in qs[1] and "Crispim" in qs[1]
+
+
 # =============================================================================
 # build_queries
 # =============================================================================
@@ -105,12 +148,18 @@ def _base_target() -> dict:
 
 
 def test_build_queries_condo_uses_name_and_city() -> None:
+    """Strategy 'condo' produz duas queries: uma com aspas (precision)
+    e uma sem (recall), ambas com o site filter."""
     qs = build_queries(_base_target(), strategy="condo")
-    assert len(qs) == 1
-    q = qs[0]
-    assert "Jardim das Acácias" in q
-    assert "São Paulo" in q
-    assert "vivareal" in q.lower() or "zapimoveis" in q.lower()
+    assert len(qs) == 2
+    # Query 1: com aspas → precision
+    assert '"Jardim das Acácias"' in qs[0]
+    # Query 2: sem aspas + bairro → recall
+    assert "Jardim das Acácias" in qs[1] and "Vila Mariana" in qs[1]
+    # Ambas com o site filter
+    for q in qs:
+        assert "São Paulo" in q
+        assert "vivareal" in q.lower() or "zapimoveis" in q.lower()
 
 
 def test_build_queries_street_uses_street_and_neighborhood() -> None:
@@ -155,6 +204,10 @@ def test_build_queries_preserves_site_filter_completely() -> None:
         for q in build_queries(target, strategy=strategy):  # type: ignore[arg-type]
             assert "site:vivareal.com.br" in q, q
             assert "site:zapimoveis.com.br" in q, q
+            # Registry inclui ChavesNaMão e ImovelWeb — todo portal
+            # cadastrado deve entrar no filtro automaticamente.
+            assert "site:chavesnamao.com.br" in q, q
+            assert "site:imovelweb.com.br" in q, q
             assert q.rstrip().endswith(")"), q  # filtro encerra com `)`
 
 

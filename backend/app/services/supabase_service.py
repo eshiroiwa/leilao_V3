@@ -82,6 +82,35 @@ class SupabaseService:
             raise SupabaseError("Upsert não retornou registros.")
         return rows[0]
 
+    def update_property(
+        self, property_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Aplica um patch (dict) num imóvel. Retorna a row atualizada ou None.
+
+        Use para edições do usuário no UI (ex.: definir ``condo_name``
+        manualmente, corrigir áreas ocultadas pelo edital). Mantemos o
+        contrato simples — o caller é responsável por sanitizar o payload
+        e remover chaves não permitidas.
+        """
+        if not payload:
+            return self.get_property_by_id(property_id)
+        logger.info(
+            "supabase.property.update", id=property_id, fields=list(payload)
+        )
+        try:
+            res = (
+                self._client.table("properties")
+                .update(payload)
+                .eq("id", property_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao atualizar property {property_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
     def delete_property(self, property_id: str) -> bool:
         """Deleta um imóvel por ID. Retorna True se algo foi deletado.
 

@@ -53,6 +53,10 @@ class ComparablesState(TypedDict, total=False):
     price_upper_bound: float | None
     ppm2_estimated: float | None
     confidence: Confidence
+    pricing_method: str
+    """Método usado pelo pricing — ``weighted_median_ppm2`` (padrão) ou
+    ``same_building_median_ppm2`` (quando há ≥3 listings do mesmo prédio
+    do alvo). Usado no `node_persist` e nos logs/UI para auditoria."""
 
     valuation_id: str
     agent_run_id: str

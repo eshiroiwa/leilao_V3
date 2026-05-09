@@ -24,11 +24,17 @@ class Comparable:
     ``ppm2`` = preço por m² do anúncio. Calcular ANTES de chamar pricing
     (caller é responsável por descartar comparáveis sem ``listed_price``
     ou ``area_total_m2``).
+
+    ``same_building`` indica que este comparável é do MESMO prédio do
+    imóvel-alvo (matching por ``condo_name`` normalizado). Quando há
+    pelo menos 3 desses, ``estimate_price`` automaticamente usa SÓ
+    eles e cravece a confidence (mesmo prédio é o melhor sinal possível).
     """
 
     listing_id: str
     ppm2: float
     weight: float  # tipicamente similarity × reliability
+    same_building: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,9 @@ def trim_outliers(comps: list[Comparable], k: float = 1.5) -> list[Comparable]:
     """Remove comparáveis fora de [Q1 − k·IQR, Q3 + k·IQR] (Tukey).
 
     Robusto a amostras pequenas: se < 4 itens, devolve a lista original.
+
+    Para apartamentos, o caller passa ``k=1.0`` (apartamentos de prédios
+    distintos têm R$/m² descontínuo; o IQR padrão deixa premium passar).
     """
     if len(comps) < 4:
         return comps
@@ -124,6 +133,52 @@ def trim_outliers(comps: list[Comparable], k: float = 1.5) -> list[Comparable]:
     kept = [c for c in comps if lo <= c.ppm2 <= hi]
     # Garante mínimo: se tivesse 4 e cortou demais, devolve original.
     return kept if len(kept) >= 3 else comps
+
+
+# ---------------------------------------------------------------------------
+# Detecção de bimodalidade no R$/m².
+# Útil para alertar o usuário quando os comparáveis vêm de prédios com
+# perfis de preço muito distintos — sinal de que ele deveria informar
+# o ``condo_name`` do alvo para refinar a busca.
+# ---------------------------------------------------------------------------
+def detect_bimodal_ppm2(
+    comps: list[Comparable], *, gap_pct: float = 0.30, min_each_side: int = 2
+) -> bool:
+    """True se houver um "gap" >= ``gap_pct`` entre clusters consecutivos
+    de R$/m², com pelo menos ``min_each_side`` comparáveis em cada lado.
+
+    Implementação simples: ordena por ppm2, procura o maior gap relativo
+    entre vizinhos. Se o gap >= ``gap_pct`` e separa a amostra em duas
+    metades de tamanho >= ``min_each_side``, é bimodal.
+
+    Para amostras < 2 * ``min_each_side`` retorna False (sem evidência).
+    """
+    n = len(comps)
+    if n < 2 * min_each_side:
+        return False
+    sorted_ppm2 = sorted(c.ppm2 for c in comps if c.ppm2 > 0)
+    if len(sorted_ppm2) < 2 * min_each_side:
+        return False
+
+    # Acha o maior gap relativo entre vizinhos consecutivos.
+    best_gap = 0.0
+    best_idx = -1
+    for i in range(1, len(sorted_ppm2)):
+        prev_v = sorted_ppm2[i - 1]
+        curr_v = sorted_ppm2[i]
+        if prev_v <= 0:
+            continue
+        rel = (curr_v - prev_v) / prev_v
+        if rel > best_gap:
+            best_gap = rel
+            best_idx = i
+
+    if best_idx == -1 or best_gap < gap_pct:
+        return False
+
+    left = best_idx
+    right = len(sorted_ppm2) - best_idx
+    return left >= min_each_side and right >= min_each_side
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +225,10 @@ def classify_confidence(
 # ---------------------------------------------------------------------------
 # Função principal: estima o preço a partir de comparáveis e área-alvo.
 # ---------------------------------------------------------------------------
+_SAME_BUILDING_MIN = 3
+"""Mínimo de comparáveis do MESMO prédio para acionar o modo dedicado."""
+
+
 def estimate_price(
     target_area_m2: float | None,
     comparables: list[Comparable],
@@ -177,11 +236,24 @@ def estimate_price(
     min_acceptable: int = 3,
     min_confident: int = 5,
     trim: bool = True,
+    trim_k: float = 1.5,
+    property_type: str | None = None,
 ) -> Valuation:
     """Devolve uma ``Valuation`` (preço central + intervalo + confidence).
 
     Se houver < ``min_acceptable`` comparáveis ou área-alvo inválida,
     devolve ``confidence=INSUFFICIENT`` com preços ``None``.
+
+    **Modo "same building"**: quando há pelo menos ``_SAME_BUILDING_MIN``
+    comparáveis com ``same_building=True``, usamos APENAS esses (mediana
+    simples, sem ponderação) e cravece a ``confidence`` em ``HIGH``
+    (>=5 listings) ou ``MEDIUM`` (3–4). É o caminho mais defensável
+    quando temos várias unidades do mesmo prédio à venda.
+
+    **Trim adaptativo**: ``trim_k`` controla a agressividade do filtro
+    de outliers. Para apartamentos, o caller costuma passar ``trim_k=1.0``
+    (em vez do 1.5 padrão), porque prédios distintos têm R$/m²
+    descontínuo e o IQR padrão deixa premium passar.
     """
     n0 = len(comparables)
 
@@ -207,7 +279,50 @@ def estimate_price(
             comparables_used=n0,
         )
 
-    comps = trim_outliers(comparables) if trim else list(comparables)
+    # ----------------------------------------------------------------- #
+    # Caminho 1: temos vários listings do MESMO prédio.
+    # ----------------------------------------------------------------- #
+    same_building = [c for c in comparables if c.same_building]
+    if len(same_building) >= _SAME_BUILDING_MIN:
+        ppm2_values = [c.ppm2 for c in same_building]
+        # Pesos uniformes: para o MESMO prédio, similaridade extra (área,
+        # quartos) só atrapalha — todas as unidades já são intrinsecamente
+        # ótimos comparables. Usar todos com peso igual evita viés.
+        weights = [1.0] * len(same_building)
+        ppm2_est = weighted_median(ppm2_values, weights)
+        p10 = weighted_quantile(ppm2_values, weights, 0.10)
+        p90 = weighted_quantile(ppm2_values, weights, 0.90)
+
+        n = len(same_building)
+        cv = coefficient_of_variation(ppm2_values)
+        # Confidence cravada com piso pelo nº de unidades do mesmo prédio.
+        if n >= 5 and cv < 0.20:
+            confidence: Confidence = "HIGH"
+        elif n >= 3:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        return Valuation(
+            estimated_price=round(ppm2_est * target_area_m2, 2),
+            price_lower_bound=round(p10 * target_area_m2, 2),
+            price_upper_bound=round(p90 * target_area_m2, 2),
+            ppm2_estimated=round(ppm2_est, 2),
+            confidence=confidence,
+            method="same_building_median_ppm2",
+            comparables_used=n,
+        )
+
+    # ----------------------------------------------------------------- #
+    # Caminho 2: pricing tradicional (mediana ponderada com trim).
+    # ----------------------------------------------------------------- #
+    # Trim mais agressivo para apartamentos (prédios diferentes geram
+    # R$/m² descontínuo).
+    effective_k = trim_k
+    if property_type and property_type.strip().lower() == "apartamento":
+        effective_k = min(trim_k, 1.0)
+
+    comps = trim_outliers(comparables, k=effective_k) if trim else list(comparables)
     ppm2_values = [c.ppm2 for c in comps]
     weights = [c.weight for c in comps]
 
@@ -234,13 +349,73 @@ def estimate_price(
     )
 
 
+# ---------------------------------------------------------------------------
+# Área efetiva do alvo: qual campo de área usar para multiplicar pelo ppm2.
+# ---------------------------------------------------------------------------
+# Imóveis vindos dos editais Caixa frequentemente registram TRÊS áreas:
+#   * area_total_m2  → área da matrícula (privativa + comum + garagem etc.)
+#   * area_built_m2  → área construída (= privativa real)
+#   * area_useful_m2 → área útil (≈ privativa, quando informada)
+#
+# Já os portais (ZAP/VivaReal) anunciam APENAS a "área anunciada":
+#   * para apartamentos isso é a área PRIVATIVA/ÚTIL;
+#   * para casas é (em geral) a área CONSTRUÍDA.
+#
+# Como o ppm2 dos comparáveis é sempre derivado da área anunciada, multiplicar
+# pelo `area_total_m2` da matrícula superdimensiona o preço quando a matrícula
+# é maior que a privativa (caso típico em apartamentos: área_total = privativa
+# + fração ideal da garagem/áreas comuns). Esta função escolhe o campo
+# coerente com o `property_type` do alvo para que ppm2 (de mercado) × área
+# (do alvo) viva no mesmo "espaço de áreas".
+def effective_target_area_m2(
+    target: dict | None,
+) -> tuple[float | None, str | None]:
+    """Devolve ``(area_m2, source_field)`` para o cálculo do preço.
+
+    Política por ``property_type`` (case-insensitive):
+
+    * ``apartamento``, ``comercial``, ``galpao``: prioriza
+      ``area_built_m2`` → ``area_useful_m2`` → ``area_total_m2``.
+    * ``casa``, ``sobrado``: prioriza ``area_built_m2`` →
+      ``area_useful_m2`` → ``area_total_m2`` (em casas a "área total" também
+      pode incluir o terreno, então construída é mais comparável).
+    * ``terreno``, ``rural``, ``outro`` ou tipo desconhecido: usa
+      ``area_total_m2`` (mantém o comportamento legado).
+
+    Retorna ``(None, None)`` quando nenhum dos campos válidos está preenchido.
+    """
+    if not target:
+        return (None, None)
+
+    def _pick(*keys: str) -> tuple[float | None, str | None]:
+        for k in keys:
+            v = target.get(k)
+            try:
+                fv = float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return (fv, k)
+        return (None, None)
+
+    ptype = (target.get("property_type") or "").strip().lower()
+
+    if ptype in {"apartamento", "comercial", "galpao"}:
+        return _pick("area_built_m2", "area_useful_m2", "area_total_m2")
+    if ptype in {"casa", "sobrado"}:
+        return _pick("area_built_m2", "area_useful_m2", "area_total_m2")
+    return _pick("area_total_m2", "area_useful_m2", "area_built_m2")
+
+
 __all__ = [
     "Comparable",
     "Valuation",
     "weighted_quantile",
     "weighted_median",
     "trim_outliers",
+    "detect_bimodal_ppm2",
     "coefficient_of_variation",
     "classify_confidence",
     "estimate_price",
+    "effective_target_area_m2",
 ]

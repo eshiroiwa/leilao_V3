@@ -64,6 +64,7 @@ create table if not exists public.properties (
   description              text,
   property_type            text,                                    -- apartamento, casa, terreno, comercial...
   image_url                text,                                    -- 1ª foto do imóvel (extraída pelo Agente 1)
+  condo_name               text,                                    -- Nome do prédio/condomínio (preferencialmente preenchido manualmente pelo usuário; usado pelo AGENTE 2 para casar comparáveis do MESMO prédio)
 
   -- Endereço normalizado (Google Address Validation)
   address_full             text,                                    -- linha completa formatada

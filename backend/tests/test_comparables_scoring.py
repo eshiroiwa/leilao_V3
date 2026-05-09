@@ -6,7 +6,9 @@ import pytest
 
 from app.agents.comparables.scoring import (
     RELIABILITY_THRESHOLD,
+    condo_match_score,
     haversine_m,
+    normalize_condo_name,
     reliability_score,
     similarity_score,
 )
@@ -43,50 +45,111 @@ def target() -> dict:
         "bedrooms": 2,
         "parking_spaces": 1,
         "property_type": "apartamento",
+        "condo_name": "Edifício Park Crispim",
     }
 
 
 def test_similarity_identical_is_max(target: dict) -> None:
+    """Imóvel idêntico (mesmo prédio) tem similaridade ~1.0."""
     score = similarity_score(target, target)
     assert score > 0.95, score
 
 
+def test_similarity_identical_without_condo_caps_at_seventy_five(target: dict) -> None:
+    """Sem ``condo_name`` em ambos os lados, a dimensão "condo" zera —
+    o teto vira ``1 - peso_condo = 0.75`` mesmo com distância zero.
+    Isso é deliberado: ausência de condo_name == sem evidência."""
+    no_condo = {k: v for k, v in target.items() if k != "condo_name"}
+    score = similarity_score(no_condo, no_condo)
+    assert 0.74 < score <= 0.76, score
+
+
 def test_similarity_far_away_zeroes_distance_component(target: dict) -> None:
     """SP→RJ (~360 km): a componente de distância vira 0; o que sobra é o
-    máximo possível das outras componentes (= 1 - peso_distância = 0.60).
-
-    Nota: na prática, o pipeline filtra por raio ANTES de chamar
-    similarity_score, então esse caso nunca chega aqui em produção.
-    Este teste garante que a função é matematicamente bem-definida.
-    """
+    máximo possível das outras componentes (= 1 - peso_distância = 0.70
+    quando há condo match)."""
     far = {**target, "latitude": -22.9068, "longitude": -43.1729}
     score = similarity_score(target, far)
-    assert 0.59 < score <= 0.60, score
-
-
-def test_similarity_different_type_drops(target: dict) -> None:
-    diff = {**target, "property_type": "terreno"}
-    score = similarity_score(target, diff)
-    # tipo conta 0.05, ainda fica alto pelos outros fatores
-    assert 0.85 < score < 0.96, score
+    # 0.25 (area) + 0.25 (condo) + 0.10 (bedrooms) + 0.10 (parking) = 0.70
+    assert 0.69 < score <= 0.71, score
 
 
 def test_similarity_different_area(target: dict) -> None:
     big = {**target, "area_total_m2": 200.0}  # ~3x maior
     score = similarity_score(target, big)
-    assert score < 0.75, score  # área é peso 0.30
+    # Área agora é peso 0.25; ainda derruba bastante o score.
+    assert score < 0.80, score
 
 
 def test_similarity_missing_geo_returns_partial(target: dict) -> None:
     no_geo = {**target, "latitude": None, "longitude": None}
     score = similarity_score(target, no_geo)
-    # sem distância (peso 0.40), max teórico = 0.60
-    assert 0.55 < score <= 0.60, score
+    # Sem distância (peso 0.30), com condo match → max = 0.70.
+    assert 0.69 < score <= 0.71, score
 
 
 def test_similarity_clamped() -> None:
     score = similarity_score({}, {})
     assert 0.0 <= score <= 1.0
+
+
+def test_similarity_same_condo_boosts_significantly(target: dict) -> None:
+    """Mesmo prédio em distância similar deve pontuar mais que prédio
+    diferente equivalente."""
+    same_condo = {**target, "condo_name": "EDIFÍCIO PARK CRISPIM"}  # variações ok
+    diff_condo = {**target, "condo_name": "Residencial Vila Nova"}
+    s_same = similarity_score(target, same_condo)
+    s_diff = similarity_score(target, diff_condo)
+    # condo pesa 0.25, então diferença esperada é exatamente ~0.25.
+    assert s_same - s_diff >= 0.20, (s_same, s_diff)
+
+
+# =============================================================================
+# condo_match_score / normalize_condo_name
+# =============================================================================
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Edifício Park Crispim", "park crispim"),
+        ("EDIF. PARK CRISPIM", "park crispim"),
+        ("Residencial Vila Verde", "vila verde"),
+        ("Cond. Cristal das Águas", "cristal das aguas"),
+        ("Conjunto João Pessoa", "joao pessoa"),
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_normalize_condo_name(raw: str | None, expected: str) -> None:
+    assert normalize_condo_name(raw) == expected
+
+
+def test_condo_match_exact() -> None:
+    assert condo_match_score("Edifício Park Crispim", "EDIF PARK CRISPIM") == 1.0
+
+
+def test_condo_match_with_extra_tokens() -> None:
+    """Nome estendido com 'Apto X' deve casar com nome curto, desde que
+    todos os tokens da menor estejam contidos na maior."""
+    assert (
+        condo_match_score("Park Crispim", "Edifício Park Crispim Apto 12") == 1.0
+    )
+
+
+def test_condo_match_single_token_no_match() -> None:
+    """1 token comum não é suficiente — evita falso positivo em nomes
+    genéricos ('Park', 'Solar', 'Jardim')."""
+    assert condo_match_score("Park Crispim", "Park dos Pinheiros") == 0.0
+
+
+def test_condo_match_different_names() -> None:
+    assert condo_match_score("Edifício Vila Verde", "Edifício Park Crispim") == 0.0
+
+
+def test_condo_match_one_side_empty() -> None:
+    assert condo_match_score(None, "Edifício X") == 0.0
+    assert condo_match_score("Edifício X", None) == 0.0
+    assert condo_match_score("", "") == 0.0
 
 
 # =============================================================================
