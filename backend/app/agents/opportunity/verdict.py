@@ -106,6 +106,9 @@ def build_warnings(
     pessimista_net_profit: float,
     auctioneer_fee_source: str,
     itbi_source: str,
+    renovation_level: str | None = None,
+    renovation_cost: float | None = None,
+    renovation_area_source: str | None = None,
 ) -> list[str]:
     """Lista heurística de avisos a serem mostrados no UI.
 
@@ -167,6 +170,20 @@ def build_warnings(
     if itbi_source == "default":
         warnings.append(
             "Alíquota de ITBI é estimada (3%) — confira a tabela do município."
+        )
+
+    # Reforma sem área construída disponível: custo saiu 0 mesmo com
+    # nível selecionado. Pode ser intencional (terreno) ou bug de cadastro
+    # (apartamento sem ``area_built_m2``). Sinaliza pro usuário.
+    if (
+        renovation_level not in (None, "none")
+        and (renovation_cost is None or renovation_cost <= 0)
+        and renovation_area_source != "no_construction"
+    ):
+        warnings.append(
+            "Nível de reforma selecionado, mas o imóvel não tem área "
+            "construída cadastrada — custo de reforma considerado 0. "
+            "Confirme a área construída no edital antes de decidir."
         )
 
     return warnings

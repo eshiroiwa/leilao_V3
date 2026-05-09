@@ -197,6 +197,64 @@ def renovation_cost_for(level: RenovationLevel, area_m2: float | None) -> float:
     return RENOVATION_PER_M2[level] * float(area_m2)
 
 
+def effective_renovation_area_m2(
+    property_row: dict | None,
+) -> tuple[float | None, str | None]:
+    """Devolve ``(area_m2, source_field)`` a usar no cálculo da reforma.
+
+    Política por ``property_type`` (case-insensitive):
+
+    * ``apartamento``, ``casa``, ``sobrado``, ``comercial``, ``galpao``:
+      reforma incide sobre a PARTE CONSTRUÍDA. Prioridade
+      ``area_built_m2`` → ``area_useful_m2`` → ``area_total_m2`` (este
+      último só como último recurso, com ressalva: para casas o
+      ``area_total_m2`` costuma ser o terreno).
+    * ``terreno``, ``lote``: NÃO há reforma — é solo, não construção.
+      Devolve ``(None, "no_construction")``. O caller deve aplicar
+      ``renovation_cost = 0`` independentemente do nível escolhido.
+    * ``rural``: pode ter benfeitorias, mas é incomum estarem
+      inventariadas. Usa ``area_built_m2`` se houver; senão devolve
+      ``(None, "no_construction")``.
+    * Tipo desconhecido: tenta ``area_built_m2`` → ``area_useful_m2``
+      como melhor palpite (mais conservador que ``area_total_m2``,
+      que pode incluir terreno).
+
+    Por que existe (separada de ``effective_target_area_m2`` do
+    pricing): o pricing precisa decidir a base de R$/m² de mercado e
+    para terrenos isso É a área total. A reforma é semanticamente
+    diferente — você não reforma terra, então terreno deve sempre
+    cair em ``0``.
+    """
+    if not property_row:
+        return (None, None)
+
+    def _pick(*keys: str) -> tuple[float | None, str | None]:
+        for k in keys:
+            v = property_row.get(k)
+            try:
+                fv = float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return (fv, k)
+        return (None, None)
+
+    ptype = (property_row.get("property_type") or "").strip().lower()
+
+    if ptype in {"terreno", "lote"}:
+        return (None, "no_construction")
+
+    if ptype in {"apartamento", "casa", "sobrado", "comercial", "galpao"}:
+        return _pick("area_built_m2", "area_useful_m2", "area_total_m2")
+
+    if ptype == "rural":
+        picked, source = _pick("area_built_m2", "area_useful_m2")
+        return (picked, source if picked is not None else "no_construction")
+
+    # Tipo desconhecido / "outro" — palpite conservador.
+    return _pick("area_built_m2", "area_useful_m2")
+
+
 def other_costs_default_for(occupancy_status: str | None) -> float:
     """Default de "outros custos" baseado no status de ocupação."""
     s = (occupancy_status or "").strip().lower()

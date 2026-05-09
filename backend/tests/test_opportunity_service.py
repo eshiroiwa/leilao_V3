@@ -13,7 +13,11 @@ def _property_row(**overrides):
         "id": "prop-1",
         "city": "São Paulo",
         "state": "SP",
+        # ``property_type`` é necessário para que ``effective_renovation_area_m2``
+        # saiba qual área usar (built vs total). Default = apartamento.
+        "property_type": "apartamento",
         "area_total_m2": 60,
+        "area_built_m2": 60,
         "occupancy_status": "desocupado",
         "has_liens_or_debts": False,
         "auctioneer_fee_pct": None,
@@ -111,18 +115,58 @@ def test_run_analysis_uses_declared_auctioneer_fee_from_property() -> None:
 
 
 def test_run_analysis_renovation_scales_with_area() -> None:
+    """Reforma usa a área CONSTRUÍDA (não a total). Dobrando a built area,
+    o custo de reforma deve dobrar."""
     inp = AnalysisInput(bid_amount=200_000, renovation_level="full")
     r60 = run_analysis(
         inp=inp,
-        property_row=_property_row(area_total_m2=60),
+        property_row=_property_row(area_built_m2=60),
         valuation=_valuation(),
     )
     r120 = run_analysis(
         inp=inp,
-        property_row=_property_row(area_total_m2=120),
+        property_row=_property_row(area_built_m2=120),
         valuation=_valuation(),
     )
     assert r120.realista.renovation_cost > r60.realista.renovation_cost
+    # Custo escala linearmente com a área construída.
+    assert r120.realista.renovation_cost == pytest.approx(
+        r60.realista.renovation_cost * 2
+    )
+
+
+def test_run_analysis_renovation_uses_built_not_total_for_house() -> None:
+    """Bug regressão: para casas, ``area_total_m2`` é o TERRENO. Reforma
+    NÃO pode escalar com terreno — só com área construída."""
+    inp = AnalysisInput(bid_amount=200_000, renovation_level="full")
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(
+            property_type="casa",
+            area_built_m2=148.0,
+            area_total_m2=253.0,  # terreno
+        ),
+        valuation=_valuation(),
+    )
+    # 148 m² × R$ 1.500 (full) = R$ 222.000.
+    # Se estivesse usando o terreno (253 × 1500 = 379.500), seria > 300k.
+    assert result.realista.renovation_cost == pytest.approx(148.0 * 1500.0)
+
+
+def test_run_analysis_terreno_has_zero_renovation_cost() -> None:
+    """Terreno NÃO se reforma — independentemente do nível escolhido,
+    custo é 0."""
+    inp = AnalysisInput(bid_amount=200_000, renovation_level="full")
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(
+            property_type="terreno",
+            area_built_m2=0,
+            area_total_m2=500.0,
+        ),
+        valuation=_valuation(),
+    )
+    assert result.realista.renovation_cost == 0.0
 
 
 def test_run_analysis_handles_missing_valuation() -> None:

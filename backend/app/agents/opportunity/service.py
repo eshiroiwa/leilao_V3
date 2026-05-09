@@ -187,9 +187,6 @@ def run_analysis(
     # --- 1. Extrai dados do property ----------------------------------
     city = property_row.get("city")
     state = property_row.get("state")
-    area_m2 = _safe_float(property_row.get("area_total_m2")) or _safe_float(
-        property_row.get("area_built_m2")
-    )
     occupancy = property_row.get("occupancy_status")
     declared_fee = _safe_float(property_row.get("auctioneer_fee_pct"))
     # Regra de negócio (cobrança de comissão de leiloeiro):
@@ -247,7 +244,24 @@ def run_analysis(
         else:
             auctioneer_fee_source = "default"
 
-    renovation_cost = A.renovation_cost_for(inp.renovation_level, area_m2)
+    # Reforma incide sobre a PARTE CONSTRUÍDA (não sobre terreno). Para
+    # apartamentos/casas/sobrados a área correta é ``area_built_m2`` e
+    # NÃO ``area_total_m2`` (que em casas é o terreno). Para terrenos o
+    # custo de reforma é zero por definição. Ver
+    # ``A.effective_renovation_area_m2`` para a política completa.
+    renovation_area_m2, _ren_area_source = A.effective_renovation_area_m2(
+        property_row
+    )
+    renovation_cost = A.renovation_cost_for(
+        inp.renovation_level, renovation_area_m2
+    )
+
+    # Para a PRECIFICAÇÃO ainda usamos a área "de mercado" do imóvel:
+    # geralmente igual à da reforma para apartamentos/casas, mas para
+    # terreno é a área total (m² de terreno × R$/m² de terreno).
+    area_m2 = _safe_float(property_row.get("area_total_m2")) or _safe_float(
+        property_row.get("area_built_m2")
+    )
 
     # --- 3. Custos fixos extra ----------------------------------------
     # Os campos ``iptu_arrears``, ``condo_arrears`` e ``other_costs`` chegam
@@ -328,6 +342,9 @@ def run_analysis(
         pessimista_net_profit=pessimista.net_profit,
         auctioneer_fee_source=auctioneer_fee_source,
         itbi_source=itbi_source,
+        renovation_level=inp.renovation_level,
+        renovation_cost=renovation_cost,
+        renovation_area_source=_ren_area_source,
     )
 
     decision = classify_verdict(

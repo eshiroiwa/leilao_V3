@@ -142,6 +142,96 @@ def test_renovation_cost_scales_with_area() -> None:
 
 
 # =============================================================================
+# effective_renovation_area_m2
+# =============================================================================
+def test_renovation_area_apartment_prefers_built_over_total() -> None:
+    """Apartamento: ``area_built_m2`` vence ``area_total_m2`` (matrícula)."""
+    area, source = A.effective_renovation_area_m2(
+        {
+            "property_type": "apartamento",
+            "area_built_m2": 65.0,
+            "area_total_m2": 75.0,
+        }
+    )
+    assert area == 65.0
+    assert source == "area_built_m2"
+
+
+def test_renovation_area_house_prefers_built_over_total() -> None:
+    """Casa: ``area_total_m2`` é o TERRENO — não pode entrar no cálculo
+    da reforma. Tem que usar ``area_built_m2``."""
+    area, source = A.effective_renovation_area_m2(
+        {
+            "property_type": "casa",
+            "area_built_m2": 148.0,
+            "area_total_m2": 253.0,  # terreno
+        }
+    )
+    assert area == 148.0
+    assert source == "area_built_m2"
+
+
+def test_renovation_area_falls_back_to_useful_then_total() -> None:
+    """``area_useful_m2`` é o segundo melhor; ``area_total_m2`` é o
+    último recurso (apenas pra apartamentos onde costuma ser confiável)."""
+    only_useful, src1 = A.effective_renovation_area_m2(
+        {"property_type": "apartamento", "area_useful_m2": 80.0}
+    )
+    assert only_useful == 80.0
+    assert src1 == "area_useful_m2"
+
+    only_total, src2 = A.effective_renovation_area_m2(
+        {"property_type": "apartamento", "area_total_m2": 90.0}
+    )
+    assert only_total == 90.0
+    assert src2 == "area_total_m2"
+
+
+def test_renovation_area_terreno_returns_none() -> None:
+    """Terreno NÃO se reforma — caller deve aplicar custo 0."""
+    area, source = A.effective_renovation_area_m2(
+        {"property_type": "terreno", "area_total_m2": 500.0}
+    )
+    assert area is None
+    assert source == "no_construction"
+
+    # Mesmo se vier ``area_built_m2`` populado por engano, ignora.
+    area2, _ = A.effective_renovation_area_m2(
+        {
+            "property_type": "lote",
+            "area_built_m2": 50.0,
+            "area_total_m2": 500.0,
+        }
+    )
+    assert area2 is None
+
+
+def test_renovation_cost_zero_for_terreno_via_effective_area() -> None:
+    """Pipeline ponta-a-ponta: terreno + nível ``full`` ainda dá 0."""
+    area, _ = A.effective_renovation_area_m2(
+        {"property_type": "terreno", "area_total_m2": 500.0}
+    )
+    assert A.renovation_cost_for("full", area) == 0.0
+
+
+def test_renovation_area_case_insensitive_and_unknown_type() -> None:
+    """Tipo é normalizado pra lower; tipo desconhecido cai no
+    palpite conservador (não usa ``area_total_m2``)."""
+    area, source = A.effective_renovation_area_m2(
+        {"property_type": "APARTAMENTO", "area_built_m2": 60.0}
+    )
+    assert area == 60.0
+    assert source == "area_built_m2"
+
+    # Tipo desconhecido com só area_total_m2 → None (mais conservador
+    # que arriscar terreno).
+    area2, _ = A.effective_renovation_area_m2(
+        {"property_type": "outro", "area_total_m2": 500.0}
+    )
+    assert area2 is None
+
+
+# =============================================================================
 # other_costs_default_for
 # =============================================================================
 def test_other_costs_for_occupancy_levels() -> None:

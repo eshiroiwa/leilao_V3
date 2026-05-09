@@ -131,6 +131,52 @@ export function renovationCostFor(
   return RENOVATION_PER_M2[level] * areaM2;
 }
 
+/**
+ * Devolve a área (m²) a usar no cálculo da reforma, espelhando
+ * `assumptions.effective_renovation_area_m2` do backend.
+ *
+ * Reforma = obra na PARTE CONSTRUÍDA. Logo:
+ * - apartamento/casa/sobrado/comercial/galpão: prioriza
+ *   `area_built_m2` → `area_useful_m2` → `area_total_m2`.
+ * - terreno/lote: 0 (não há reforma — é solo).
+ * - rural: `area_built_m2` se houver, senão 0.
+ * - desconhecido: tenta `area_built_m2` → `area_useful_m2`
+ *   (palpite conservador, evita o terreno em casas).
+ */
+export function effectiveRenovationAreaM2(
+  property: Pick<Property, "property_type" | "area_built_m2" | "area_total_m2"> & {
+    area_useful_m2?: number | null;
+  },
+): number | null {
+  const ptype = (property.property_type ?? "").trim().toLowerCase();
+  const pick = (...keys: Array<keyof typeof property>): number | null => {
+    for (const k of keys) {
+      const v = property[k];
+      const fv = typeof v === "number" ? v : 0;
+      if (fv > 0) return fv;
+    }
+    return null;
+  };
+
+  if (ptype === "terreno" || ptype === "lote") return null;
+
+  if (
+    ptype === "apartamento" ||
+    ptype === "casa" ||
+    ptype === "sobrado" ||
+    ptype === "comercial" ||
+    ptype === "galpao"
+  ) {
+    return pick("area_built_m2", "area_useful_m2", "area_total_m2");
+  }
+
+  if (ptype === "rural") {
+    return pick("area_built_m2", "area_useful_m2");
+  }
+
+  return pick("area_built_m2", "area_useful_m2");
+}
+
 export function otherCostsDefaultFor(occ: string | null | undefined): number {
   const s = (occ ?? "").trim().toLowerCase();
   if (s === "desocupado" || s === "vacant" || s === "livre") {
@@ -353,6 +399,9 @@ export function buildWarnings(args: {
   pessimistaNetProfit: number;
   auctioneerFeeSource: OpportunityAssumptions["auctioneer_fee_source"];
   itbiSource: OpportunityAssumptions["itbi_source"];
+  renovationLevel?: RenovationLevel | null;
+  renovationCost?: number | null;
+  renovationAreaAvailable?: boolean;
 }): string[] {
   const out: string[] = [];
   const occ = (args.occupancyStatus ?? "").toLowerCase();
@@ -398,9 +447,28 @@ export function buildWarnings(args: {
     out.push(
       "Comissão do leiloeiro (5%) é o default — confira no edital se é menor.",
     );
+  } else if (args.auctioneerFeeSource === "no_auctioneer") {
+    out.push(
+      "Imóvel sem leiloeiro designado — assumimos 0% de comissão. " +
+        "Se o edital indicar um leiloeiro, ajuste manualmente.",
+    );
   }
   if (args.itbiSource === "default") {
     out.push("Alíquota de ITBI é estimada (3%) — confira a tabela do município.");
+  }
+
+  // Reforma sem área construída disponível: custo saiu 0 mesmo com nível
+  // selecionado. Pode ser intencional (terreno) ou cadastro incompleto
+  // (apartamento sem ``area_built_m2``). Sinaliza pro usuário.
+  if (
+    args.renovationLevel != null &&
+    args.renovationLevel !== "none" &&
+    (args.renovationCost == null || args.renovationCost <= 0) &&
+    args.renovationAreaAvailable === false
+  ) {
+    out.push(
+      "Nível de reforma selecionado, mas o imóvel não tem área construída cadastrada — custo de reforma considerado 0. Confirme a área construída no edital antes de decidir.",
+    );
   }
   return out;
 }
@@ -529,7 +597,16 @@ export function runAnalysisLocal(args: {
     }
   }
 
-  const renovationCost = renovationCostFor(input.renovation_level, areaM2);
+  // Reforma incide sobre a PARTE CONSTRUÍDA (não sobre terreno). Para
+  // apartamentos/casas a área correta é ``area_built_m2``, NÃO
+  // ``area_total_m2`` (que em casas costuma ser o terreno). Para
+  // terrenos o custo é zero por definição. Ver
+  // `effectiveRenovationAreaM2` para a política completa.
+  const renovationAreaM2 = effectiveRenovationAreaM2(property);
+  const renovationCost = renovationCostFor(
+    input.renovation_level,
+    renovationAreaM2,
+  );
 
   // Custos fixos.
   // ATENÇÃO: usamos ``??`` (não ``||``) para preservar o ``0`` explícito do
@@ -601,6 +678,9 @@ export function runAnalysisLocal(args: {
     pessimistaNetProfit: pessimista.net_profit,
     auctioneerFeeSource,
     itbiSource,
+    renovationLevel: input.renovation_level,
+    renovationCost,
+    renovationAreaAvailable: renovationAreaM2 != null && renovationAreaM2 > 0,
   });
   const decision = classifyVerdict({
     realistaNetRoi: realista.net_roi_pct,
