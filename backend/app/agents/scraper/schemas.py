@@ -46,6 +46,17 @@ class ExtractedAuctionData(BaseModel):
     auctioneer_lot_id: str | None = Field(
         None, description="Número/identificador do lote no leiloeiro."
     )
+    auctioneer_name: str | None = Field(
+        None,
+        description=(
+            "Nome do leiloeiro tal como aparece no edital (texto livre, sem "
+            "limpeza). Em editais Caixa o padrão típico é 'Leiloeiro(a): "
+            "FULANO DE TAL'. Devolva apenas o nome próprio, sem o rótulo "
+            "'Leiloeiro(a):'. Quando o markdown indica explicitamente "
+            "'Compra Direta' ou 'Venda Online' (Caixa) e NÃO aparece nome, "
+            "devolva null — sinal de que não há leiloeiro/comissão."
+        ),
+    )
 
     title: str | None = Field(None, description="Título do anúncio.")
     description: str | None = Field(None, description="Descrição livre do imóvel.")

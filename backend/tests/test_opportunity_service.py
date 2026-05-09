@@ -17,6 +17,7 @@ def _property_row(**overrides):
         "occupancy_status": "desocupado",
         "has_liens_or_debts": False,
         "auctioneer_fee_pct": None,
+        "auctioneer_name": None,
         "iptu_arrears": None,
         "condo_arrears": None,
     }
@@ -158,16 +159,31 @@ def test_run_analysis_warns_about_low_confidence_valuation() -> None:
     assert any("confiança baixa" in w.lower() for w in result.warnings)
 
 
-def test_run_analysis_property_arrears_flow_to_scenario_when_input_zero() -> None:
-    """Se inputs IPTU/condo == 0, mas a property tem valor, usa o do banco."""
-    inp = AnalysisInput(bid_amount=200_000, iptu_arrears=0, condo_arrears=0)
+def test_run_analysis_explicit_zero_in_input_is_preserved() -> None:
+    """Regressão do bug "outros custos = 0 vira 8000 default": quando o
+    usuário declara EXPLICITAMENTE ``0`` em IPTU/condo/outros, o cálculo
+    deve respeitar o ``0`` e não substituir pelo valor da property nem
+    pelo default por ocupação."""
+    inp = AnalysisInput(
+        bid_amount=200_000,
+        iptu_arrears=0,
+        condo_arrears=0,
+        other_costs=0,
+    )
     result = run_analysis(
         inp=inp,
-        property_row=_property_row(iptu_arrears=2_500, condo_arrears=4_000),
+        # Property row preenchida com valores não-zero — antes do fix esses
+        # iam "vazar" pro cenário porque ``or`` descartava o ``0``.
+        property_row=_property_row(
+            iptu_arrears=2_500,
+            condo_arrears=4_000,
+            occupancy_status="ocupado",  # default seria 15.000
+        ),
         valuation=_valuation(),
     )
-    assert result.realista.iptu_arrears == pytest.approx(2_500)
-    assert result.realista.condo_arrears == pytest.approx(4_000)
+    assert result.realista.iptu_arrears == 0
+    assert result.realista.condo_arrears == 0
+    assert result.realista.other_costs == 0
 
 
 def test_run_analysis_user_input_overrides_property_arrears() -> None:
@@ -225,12 +241,97 @@ def test_run_analysis_pct_overrides_apply() -> None:
 
 
 def test_run_analysis_assumptions_snapshot_records_sources() -> None:
+    """Cidade fora da tabela ITBI → ``default``; com leiloeiro nominal e sem
+    declaração no edital → ``default`` (5%)."""
     inp = AnalysisInput(bid_amount=200_000)
     result = run_analysis(
         inp=inp,
-        property_row=_property_row(city="CidadeInventada", state="XX"),
+        property_row=_property_row(
+            city="CidadeInventada",
+            state="XX",
+            auctioneer_id="zuk-leilao-uuid",
+        ),
         valuation=_valuation(),
     )
-    # cidade fora da tabela → itbi_source == "default"
     assert result.assumptions.itbi_source == "default"
     assert result.assumptions.auctioneer_fee_source == "default"
+
+
+# =============================================================================
+# Comissão do leiloeiro: presença/ausência de leiloeiro nominal
+# =============================================================================
+def test_run_analysis_no_auctioneer_yields_zero_fee() -> None:
+    """Regra: lote SEM leiloeiro nominal (típico em ``venda-imoveis.caixa.gov.br``
+    sem leiloeiro designado) → comissão 0%, ``source == 'no_auctioneer'`` e
+    NENHUM warning sobre default 5%."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(),
+        valuation=_valuation(),
+    )
+    assert result.realista.auctioneer_fee == 0.0
+    assert result.assumptions.auctioneer_fee_source == "no_auctioneer"
+    assert result.assumptions.auctioneer_fee_pct == 0.0
+    assert not any(
+        "comissão do leiloeiro (5%)" in w.lower() for w in result.warnings
+    )
+
+
+def test_run_analysis_with_auctioneer_uses_5pct_default() -> None:
+    """Lote COM leiloeiro nominal e sem fee declarado → comissão 5% (default
+    histórico do mercado), ``source == 'default'``."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(auctioneer_id="zuk-leilao-uuid"),
+        valuation=_valuation(),
+    )
+    assert result.realista.auctioneer_fee == pytest.approx(200_000 * 0.05)
+    assert result.assumptions.auctioneer_fee_source == "default"
+
+
+def test_run_analysis_caixa_lot_with_leiloeiro_name_charges_commission() -> None:
+    """Lote Caixa SEM ``auctioneer_id`` (portais próprios não nos cobrem)
+    mas COM ``auctioneer_name`` extraído do edital ("Leiloeiro(a): FULANO")
+    → 5% (regra do mercado: nome do leiloeiro presente significa comissão)."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(
+            auctioneer_id=None,
+            auctioneer_name="ANDERSON LOPES DE PAULA",
+        ),
+        valuation=_valuation(),
+    )
+    assert result.realista.auctioneer_fee == pytest.approx(200_000 * 0.05)
+    assert result.assumptions.auctioneer_fee_source == "default"
+
+
+def test_run_analysis_caixa_lot_with_blank_auctioneer_name_is_treated_as_no_auctioneer() -> None:
+    """``auctioneer_name`` em branco (string vazia, só whitespace) NÃO
+    deve ser tratado como leiloeiro presente."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(
+            auctioneer_id=None,
+            auctioneer_name="   ",
+        ),
+        valuation=_valuation(),
+    )
+    assert result.realista.auctioneer_fee == 0.0
+    assert result.assumptions.auctioneer_fee_source == "no_auctioneer"
+
+
+def test_run_analysis_declared_zero_fee_is_respected_even_without_auctioneer() -> None:
+    """Edital com 0% explícito tem prioridade sobre tudo — inclusive sobre
+    a heurística de ``no_auctioneer``."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(auctioneer_fee_pct=0.0),
+        valuation=_valuation(),
+    )
+    assert result.realista.auctioneer_fee == 0.0
+    assert result.assumptions.auctioneer_fee_source == "edital"

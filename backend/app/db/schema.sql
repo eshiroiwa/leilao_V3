@@ -58,6 +58,11 @@ create table if not exists public.properties (
   source_url               text not null unique,
   auctioneer_id            uuid references public.auctioneers(id) on delete set null,
   auctioneer_lot_id        text,                                    -- nº interno do lote no leiloeiro
+  -- Nome do leiloeiro extraído do edital (texto livre). Usado pelo
+  -- AGENTE 3 para decidir se há comissão: nome presente ⇒ cobra 5%
+  -- (default histórico). Útil principalmente para lotes Caixa onde
+  -- nem todo edital tem leiloeiro designado (vs. "Compra Direta").
+  auctioneer_name          text,
 
   -- Identificação
   title                    text,

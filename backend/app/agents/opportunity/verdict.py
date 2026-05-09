@@ -159,6 +159,11 @@ def build_warnings(
         warnings.append(
             "Comissão do leiloeiro (5%) é o default — confira no edital se é menor."
         )
+    elif auctioneer_fee_source == "no_auctioneer":
+        warnings.append(
+            "Imóvel sem leiloeiro designado — assumimos 0% de comissão. "
+            "Se o edital indicar um leiloeiro, ajuste manualmente."
+        )
     if itbi_source == "default":
         warnings.append(
             "Alíquota de ITBI é estimada (3%) — confira a tabela do município."

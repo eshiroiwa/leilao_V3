@@ -58,6 +58,25 @@ Regras OBRIGATÓRIAS:
     - 'biasi'         → biasileiloes.com.br
     Se não encontrar correspondência, retorne null.
 
+12b. auctioneer_name (NOME PESSOA-FÍSICA do leiloeiro, quando aparecer):
+    - O markdown da Caixa frequentemente contém o padrão
+        "Leiloeiro(a): FULANO DE TAL"
+      seguido de "Data do 1º Leilão" / "Data do 2º Leilão". Quando esse
+      padrão aparece, EXTRAIA SOMENTE o nome próprio (descarte o rótulo
+      "Leiloeiro(a):" e o que vier depois da quebra de linha).
+      Exemplo:
+        Input markdown:
+          "Leiloeiro(a): ANDERSON LOPES DE PAULA
+           Data do 1º Leilão - 05/05/2026 - 10h00"
+        Output: auctioneer_name = "ANDERSON LOPES DE PAULA"
+    - Para portais Zuk/Mega/Biasi/Sodré-Santoro: o leiloeiro é a
+      PESSOA-JURÍDICA (e já fica capturada via `auctioneer_slug`).
+      Devolva null em `auctioneer_name` para não duplicar o sinal.
+    - Quando o lote Caixa indica explicitamente "Compra Direta",
+      "Venda Online" ou "Venda Direta" e NENHUM nome de leiloeiro
+      aparece no markdown, devolva null. Esse é o sinal de que não
+      há leiloeiro/comissão (Caixa vendendo direto ao arrematante).
+
 13. CUSTOS DO EDITAL (alimentam a análise financeira automática):
 
     13.1 iptu_arrears (IPTU em atraso, BRL):
@@ -74,14 +93,29 @@ Regras OBRIGATÓRIAS:
          - SOMENTE valores explícitos. Sem valor → null.
 
     13.3 auctioneer_fee_pct (comissão do leiloeiro, FRAÇÃO DECIMAL):
-         - 0.05 = 5% (padrão histórico do mercado brasileiro).
-         - Em VENDA DIRETA / ONLINE da CAIXA Econômica Federal NÃO
-           há comissão de leiloeiro: retorne 0.0.
-           (Detecte por: domínio venda-imoveis.caixa.gov.br, "Caixa
-            Econômica Federal" como vendedor, "venda direta", "venda online".)
-         - Se o edital cita um percentual diferente (ex.: 6%), devolva
-           a fração correspondente (0.06).
-         - Se nada for dito, retorne null para usarmos o default.
+         REGRA PRINCIPAL: a presença de "Leiloeiro(a): NOME" no markdown
+         significa QUE HÁ COMISSÃO, mesmo em domínio Caixa. Nesse caso
+         NÃO retorne 0.0 — retorne null para que o AGENTE 3 aplique o
+         default de 5% (ou um percentual explícito se o edital citar).
+
+         Quadro de decisão:
+         (a) Edital declara explicitamente um percentual (ex.: "Comissão
+             do Leiloeiro: 5,00%", "comissão de 6%") → devolva a fração
+             correspondente (0.05, 0.06…).
+         (b) Lote em "Compra Direta" / "Venda Online" / "Venda Direta"
+             da Caixa, SEM nome de leiloeiro no markdown (sem
+             "Leiloeiro(a):" e sem "Leiloeiro: …") → devolva 0.0.
+             Nesse caso a Caixa vende direto ao arrematante e não há
+             intermediário.
+         (c) Há "Leiloeiro(a): NOME" presente no markdown (mesmo em
+             domínio Caixa) E o edital NÃO declara percentual → devolva
+             null. O default de 5% (Decreto 21.981/1932) será aplicado
+             pelo AGENTE 3.
+         (d) Nada relevante encontrado → null.
+
+         IMPORTANTE: nunca retorne 0.0 só porque o domínio é Caixa. O
+         que zera a comissão é a AUSÊNCIA do leiloeiro nominal, não a
+         presença do banco. Confira o markdown ANTES de devolver 0.0.
 
 14. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
     - Imagens no markdown aparecem no formato `![alt](url)` ou em tags HTML

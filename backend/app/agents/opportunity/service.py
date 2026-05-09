@@ -192,6 +192,23 @@ def run_analysis(
     )
     occupancy = property_row.get("occupancy_status")
     declared_fee = _safe_float(property_row.get("auctioneer_fee_pct"))
+    # Regra de negócio (cobrança de comissão de leiloeiro):
+    #
+    #   1. ``auctioneer_id`` populado = portal próprio do leiloeiro
+    #      (Zuk, Mega Leilões, Biasi, Sodré-Santoro). SEMPRE há comissão.
+    #   2. ``auctioneer_name`` populado = leiloeiro pessoa-física assina
+    #      o edital (caso típico em lotes Caixa: "Leiloeiro(a): FULANO").
+    #      Há comissão.
+    #   3. ``auctioneer_slug`` (passado pelo caller, ex.: dry-run) é só
+    #      um atalho para resolver pelo slug sem buscar o id.
+    #   4. Nada disso = venda direta sem intermediário (lotes Caixa em
+    #      "Compra Direta"/"Venda Online"). NÃO há comissão (0%).
+    auctioneer_name = (property_row.get("auctioneer_name") or "").strip()
+    has_auctioneer = (
+        bool(property_row.get("auctioneer_id"))
+        or bool((auctioneer_slug or "").strip())
+        or bool(auctioneer_name)
+    )
 
     # --- 2. Resolve as alíquotas --------------------------------------
     itbi_pct, itbi_in_table = A.itbi_pct_for(city, state)
@@ -212,10 +229,19 @@ def run_analysis(
         auctioneer_fee_source = "override"
     else:
         auctioneer_fee_pct = A.auctioneer_fee_pct_for(
-            declared_pct=declared_fee, auctioneer_slug=auctioneer_slug
+            declared_pct=declared_fee,
+            has_auctioneer=has_auctioneer,
+            auctioneer_slug=auctioneer_slug,
         )
+        # Ordem dos casos importa — espelha a prioridade da função:
+        # 1) edital tem precedência absoluta (0% explícito também conta);
+        # 2) sem leiloeiro nominal → no_auctioneer (= 0%);
+        # 3) leiloeiro Caixa via slug → caixa_zero (= 0%);
+        # 4) leiloeiro tradicional sem declaração → default (= 5%).
         if declared_fee is not None and declared_fee >= 0:
             auctioneer_fee_source = "edital"
+        elif not has_auctioneer:
+            auctioneer_fee_source = "no_auctioneer"
         elif auctioneer_fee_pct == A.AUCTIONEER_FEE_PCT_CAIXA:
             auctioneer_fee_source = "caixa_zero"
         else:
@@ -224,13 +250,15 @@ def run_analysis(
     renovation_cost = A.renovation_cost_for(inp.renovation_level, area_m2)
 
     # --- 3. Custos fixos extra ----------------------------------------
-    iptu_arrears = inp.iptu_arrears or _safe_float(
-        property_row.get("iptu_arrears")
-    ) or 0.0
-    condo_arrears = inp.condo_arrears or _safe_float(
-        property_row.get("condo_arrears")
-    ) or 0.0
-    other_costs = inp.other_costs or A.other_costs_default_for(occupancy)
+    # Os campos ``iptu_arrears``, ``condo_arrears`` e ``other_costs`` chegam
+    # SEMPRE preenchidos no ``AnalysisInput`` (default 0 no schema). O frontend
+    # já calcula o default sugerido (``otherCostsDefaultFor``) e o envia como
+    # valor literal — então aqui só preservamos. Antes usávamos ``or`` para
+    # cair em fallbacks, mas isso descartava o ``0`` explícito do usuário e
+    # voltava o default (bug reportado: "outros custos = 0 → vira 8000").
+    iptu_arrears = float(inp.iptu_arrears)
+    condo_arrears = float(inp.condo_arrears)
+    other_costs = float(inp.other_costs)
 
     # --- 4. Cenários (3 preços de venda) ------------------------------
     if inp.sale_price_override is not None and inp.sale_price_override > 0:

@@ -66,8 +66,13 @@ ITBI_DEFAULT: Final[float] = 0.03  # 3% — alíquota mais comum no Brasil
 #     (Decreto 21.981/1932). Quando o edital não declara, usamos o default.
 #   * Caixa Online ("venda online direta"): 0% — a Caixa não cobra comissão
 #     de leiloeiro nessa modalidade.
+#   * SEM leiloeiro nominal (auctioneer_id is None): 0% — venda direta sem
+#     intermediário, não há a quem pagar comissão. Esse é o caso típico
+#     dos lotes em ``venda-imoveis.caixa.gov.br`` que não têm leiloeiro
+#     designado.
 AUCTIONEER_FEE_PCT_DEFAULT: Final[float] = 0.05
 AUCTIONEER_FEE_PCT_CAIXA: Final[float] = 0.00
+AUCTIONEER_FEE_PCT_NO_AUCTIONEER: Final[float] = 0.00
 
 # Slugs dos leiloeiros que usam venda online direta SEM comissão.
 # Mantenha em lowercase. (Caixa atua via portal próprio; quando virmos um
@@ -161,16 +166,25 @@ def itbi_pct_for(city: str | None, state: str | None) -> tuple[float, bool]:
 def auctioneer_fee_pct_for(
     *,
     declared_pct: float | None,
-    auctioneer_slug: str | None,
+    has_auctioneer: bool,
+    auctioneer_slug: str | None = None,
 ) -> float:
     """Resolve a comissão do leiloeiro com prioridade:
 
     1. Valor declarado pelo edital (se o Agente 1 conseguiu extrair).
-    2. ``0%`` se for venda direta da Caixa.
-    3. Default ``5%``.
+       Quando o edital diz "0%", respeitamos — mesmo que ``has_auctioneer``
+       seja True (caso típico: Caixa Online com auctioneer designado).
+    2. ``has_auctioneer=False`` → ``0%``: venda direta sem intermediário.
+       Regra do mercado: "no site da Caixa, quando o nome do leiloeiro
+       está presente significa que existe comissão".
+    3. ``auctioneer_slug`` na lista ``SLUGS_NO_AUCTIONEER_FEE`` → ``0%``
+       (venda online da Caixa via slug específico).
+    4. Default ``5%`` (Decreto 21.981/1932).
     """
     if declared_pct is not None and declared_pct >= 0:
         return float(declared_pct)
+    if not has_auctioneer:
+        return AUCTIONEER_FEE_PCT_NO_AUCTIONEER
     if auctioneer_slug and auctioneer_slug.strip().lower() in SLUGS_NO_AUCTIONEER_FEE:
         return AUCTIONEER_FEE_PCT_CAIXA
     return AUCTIONEER_FEE_PCT_DEFAULT

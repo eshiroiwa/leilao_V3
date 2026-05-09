@@ -39,27 +39,93 @@ def test_itbi_no_state_uses_default() -> None:
 # auctioneer_fee_pct_for
 # =============================================================================
 def test_auctioneer_fee_uses_declared_when_available() -> None:
-    assert A.auctioneer_fee_pct_for(declared_pct=0.04, auctioneer_slug=None) == 0.04
-
-
-def test_auctioneer_fee_zero_for_caixa() -> None:
-    assert A.auctioneer_fee_pct_for(declared_pct=None, auctioneer_slug="caixa") == 0.0
+    """``declared_pct`` do edital tem prioridade absoluta — não importa se
+    há leiloeiro ou se é Caixa."""
     assert (
-        A.auctioneer_fee_pct_for(declared_pct=None, auctioneer_slug="caixa-leiloes")
+        A.auctioneer_fee_pct_for(
+            declared_pct=0.04,
+            has_auctioneer=True,
+            auctioneer_slug=None,
+        )
+        == 0.04
+    )
+
+
+def test_auctioneer_fee_declared_zero_is_respected() -> None:
+    """Se o edital diz 0% explicitamente, devolvemos 0 — não 5% default."""
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=0.0,
+            has_auctioneer=True,
+            auctioneer_slug="zuk",
+        )
         == 0.0
     )
 
 
-def test_auctioneer_fee_default_for_unknown_slug() -> None:
+def test_auctioneer_fee_zero_when_no_auctioneer_present() -> None:
+    """Regra principal: imóvel SEM leiloeiro nominal (ex.: venda direta
+    Caixa sem leiloeiro designado) → 0% de comissão."""
     assert (
-        A.auctioneer_fee_pct_for(declared_pct=None, auctioneer_slug="zukerman")
+        A.auctioneer_fee_pct_for(
+            declared_pct=None,
+            has_auctioneer=False,
+        )
+        == 0.0
+    )
+    assert A.AUCTIONEER_FEE_PCT_NO_AUCTIONEER == 0.0
+
+
+def test_auctioneer_fee_zero_for_caixa_slug() -> None:
+    """Caixa via slug (ainda quando ``has_auctioneer=True``) é 0%."""
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=None,
+            has_auctioneer=True,
+            auctioneer_slug="caixa",
+        )
+        == 0.0
+    )
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=None,
+            has_auctioneer=True,
+            auctioneer_slug="caixa-leiloes",
+        )
+        == 0.0
+    )
+
+
+def test_auctioneer_fee_default_for_known_auctioneer_without_declaration() -> None:
+    """Leiloeiro tradicional (Zuk/Mega/etc.) sem declaração → 5% default."""
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=None,
+            has_auctioneer=True,
+            auctioneer_slug="zuk",
+        )
         == A.AUCTIONEER_FEE_PCT_DEFAULT
     )
 
 
-def test_auctioneer_fee_declared_beats_caixa() -> None:
-    """Se o edital declarou explicitamente, esse valor manda mesmo se for Caixa."""
-    assert A.auctioneer_fee_pct_for(declared_pct=0.05, auctioneer_slug="caixa") == 0.05
+def test_auctioneer_fee_declared_beats_caixa_and_no_auctioneer() -> None:
+    """Edital tem prioridade absoluta sobre tudo: ``has_auctioneer``,
+    ``slug``, e até comportamento default."""
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=0.05,
+            has_auctioneer=False,  # mesmo sem leiloeiro, edital manda
+        )
+        == 0.05
+    )
+    assert (
+        A.auctioneer_fee_pct_for(
+            declared_pct=0.05,
+            has_auctioneer=True,
+            auctioneer_slug="caixa",  # sluct caixa NÃO sobrepõe edital
+        )
+        == 0.05
+    )
 
 
 # =============================================================================

@@ -361,6 +361,7 @@ def node_persist(state: ScraperState) -> dict[str, Any]:
         "source_url": state["url"],
         "auctioneer_id": auctioneer_id,
         "auctioneer_lot_id": extracted.auctioneer_lot_id,
+        "auctioneer_name": (extracted.auctioneer_name or "").strip() or None,
         "title": extracted.title,
         "description": extracted.description,
         "property_type": extracted.property_type,

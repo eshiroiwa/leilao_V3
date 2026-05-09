@@ -145,7 +145,13 @@ class AssumptionsSnapshot(BaseModel):
     itbi_source: Literal["city_table", "default", "override"]
     registration_pct: float
     auctioneer_fee_pct: float
-    auctioneer_fee_source: Literal["edital", "caixa_zero", "default", "override"]
+    auctioneer_fee_source: Literal[
+        "edital",
+        "caixa_zero",
+        "no_auctioneer",
+        "default",
+        "override",
+    ]
     realtor_fee_pct: float
     income_tax_pct: float
     income_tax_basis: Literal["gross_profit", "sale_price"]
