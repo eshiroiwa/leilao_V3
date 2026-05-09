@@ -89,16 +89,65 @@ class ExtractedAuctionData(BaseModel):
     bathrooms: int | None = Field(None, ge=0, le=50)
     parking_spaces: int | None = Field(None, ge=0, le=50)
 
-    appraisal_value: float | None = Field(None, description="Valor de avaliação em BRL.")
-    minimum_bid_first: float | None = Field(None, description="Lance mínimo da 1ª praça em BRL.")
-    minimum_bid_second: float | None = Field(None, description="Lance mínimo da 2ª praça em BRL.")
-    current_bid: float | None = Field(None, description="Lance atual, se exibido, em BRL.")
+    appraisal_value: float | None = Field(
+        None,
+        description=(
+            "Valor de AVALIAÇÃO do imóvel, em BRL. É o valor de mercado "
+            "declarado no laudo (rótulos: 'Avaliação:', 'Valor de "
+            "avaliação:', 'Avaliado em:'). NÃO confunda com 'Lance "
+            "inicial' — costuma diferir (lance ~ % da avaliação)."
+        ),
+    )
+    minimum_bid_first: float | None = Field(
+        None,
+        description=(
+            "Lance MÍNIMO de PARTIDA da 1ª praça (ou da praça ÚNICA, "
+            "no Zuk e similares), em BRL. Procure rótulos: 'Lance "
+            "inicial:', 'Lance mínimo:', 'Em leilão pelo valor de', "
+            "'Valor inicial:', 'Lance de abertura'. ATENÇÃO: nunca é "
+            "um lance JÁ DADO por arrematante — esse vai em "
+            "``current_bid``. Mesmo quando o lance atual coincide com "
+            "o inicial, este campo deve ser preenchido."
+        ),
+    )
+    minimum_bid_second: float | None = Field(
+        None,
+        description=(
+            "Lance MÍNIMO de PARTIDA da 2ª praça, em BRL. SOMENTE "
+            "quando o edital tem DUAS fases explícitas ('1ª Praça' / "
+            "'2ª Praça', '1º Leilão' / '2º Leilão'). Em leilões de "
+            "praça única (Zuk, modalidade 'Encerramento Único'), "
+            "devolva null."
+        ),
+    )
+    current_bid: float | None = Field(
+        None,
+        description=(
+            "Lance JÁ DADO por arrematante na plataforma, em BRL. "
+            "Procure: 'Maior lance até agora', 'Lance atual:', 'por "
+            "L0****A', 'Último lance:'. Se nenhum lance foi dado "
+            "ainda, devolva null. Pode coincidir com "
+            "``minimum_bid_first`` (caso de igualar o lance inicial) "
+            "— os dois campos devem ser preenchidos nesse caso."
+        ),
+    )
 
     first_auction_at: datetime | None = Field(
-        None, description="Data/hora da 1ª praça (ISO 8601 com timezone se possível)."
+        None,
+        description=(
+            "Data/hora da 1ª praça (ou da praça ÚNICA no Zuk), ISO "
+            "8601 com timezone. Use America/Sao_Paulo (-03:00) se a "
+            "página não indicar fuso. Rótulos típicos: 'Data do 1º "
+            "Leilão', 'Encerra em', 'Data:'."
+        ),
     )
     second_auction_at: datetime | None = Field(
-        None, description="Data/hora da 2ª praça (ISO 8601 com timezone se possível)."
+        None,
+        description=(
+            "Data/hora da 2ª praça, ISO 8601. SOMENTE quando o edital "
+            "explicita duas fases distintas. Em leilões de praça única "
+            "(Zuk e similares), devolva null."
+        ),
     )
 
     legal_status: str | None = Field(

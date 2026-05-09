@@ -117,7 +117,72 @@ Regras OBRIGATÓRIAS:
          que zera a comissão é a AUSÊNCIA do leiloeiro nominal, não a
          presença do banco. Confira o markdown ANTES de devolver 0.0.
 
-14. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
+14. VALORES E DATAS DO LEILÃO — distinção CRÍTICA entre lance inicial
+    e lance atual:
+
+    14.1 minimum_bid_first (lance MÍNIMO da 1ª praça, em BRL):
+         - É o **preço de partida** do leilão. Nunca é um lance dado
+           por um arrematante.
+         - Procure rótulos como:
+             "Lance inicial:", "Lance mínimo:", "Em leilão pelo valor de",
+             "Valor de venda:", "Valor inicial:", "Lance de abertura",
+             "Valor mínimo de arrematação".
+         - No portal Zuk o leilão é de PRAÇA ÚNICA (não há 1ª e 2ª).
+           Nesse caso o "Lance inicial: R$ X" do bloco principal é o
+           ``minimum_bid_first`` — e ``minimum_bid_second`` deve ser null.
+         - Em editais Caixa/judiciais com 2 fases, "1ª Praça – R$ X" /
+           "2ª Praça – R$ Y" mapeia para
+           ``minimum_bid_first`` / ``minimum_bid_second``.
+
+    14.2 minimum_bid_second (lance MÍNIMO da 2ª praça, em BRL):
+         - SOMENTE quando há explicitamente DUAS fases no edital
+           ("1ª Praça" e "2ª Praça", "1ª Leilão" e "2º Leilão").
+         - Em leilões de praça única (Zuk e similares) → null.
+
+    14.3 current_bid (LANCE ATUAL, em BRL):
+         - É o lance JÁ DADO por um arrematante na plataforma. Procure:
+             "Maior lance até agora", "Lance atual:", "por L0****A",
+             "Último lance:", "Lances ofertados".
+         - ATENÇÃO: pode ser igual ao ``minimum_bid_first`` quando
+           alguém apenas igualou o lance inicial. Nesse caso preencha
+           OS DOIS campos com o mesmo valor — não deixe ``minimum_bid_first``
+           vazio só porque ``current_bid`` aparece com o mesmo número.
+         - Se nenhum lance foi dado ainda → null.
+
+    14.4 first_auction_at / second_auction_at:
+         - Em editais com 2 fases: data/hora de cada praça.
+         - No Zuk (praça única): use a data exibida ("Encerra em
+           12/05/26 às 10h52", ou "Data: 12/05/26 às 10h52") como
+           ``first_auction_at``; ``second_auction_at`` fica null.
+         - SEMPRE com fuso horário; assuma America/Sao_Paulo (-03:00)
+           se não houver indicação explícita.
+
+    14.5 appraisal_value (avaliação do edital):
+         - É o valor de mercado declarado no laudo de avaliação,
+           normalmente DIFERENTE do lance inicial. Rótulos:
+             "Avaliação:", "Valor de avaliação:", "Avaliado em:".
+         - NÃO confunda com "Lance inicial" — eles costumam diferir:
+           o lance é tipicamente um % da avaliação.
+
+    Exemplo CONCRETO (Zuk, praça única — caso real):
+
+      Markdown contém:
+        "Encerra em 12/05/26 às 10h52
+         Em leilão pelo valor de R$ 201.698,38
+         - Lance inicial:
+         - Data 12/05/26 às 10h52
+         R$ 201.698,38
+         R$ 201.698,38 Maior lance até agora por L0****A"
+
+      Output esperado:
+        appraisal_value     = (do bloco "Avaliação:", se presente)
+        minimum_bid_first   = 201698.38   ← lance inicial
+        minimum_bid_second  = null         ← praça única
+        current_bid         = 201698.38   ← maior lance dado
+        first_auction_at    = "2026-05-12T10:52:00-03:00"
+        second_auction_at   = null
+
+15. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
     - Imagens no markdown aparecem no formato `![alt](url)` ou em tags HTML
       `<img src="url">`. Pegue a URL da primeira que SEJA uma fotografia
       do IMÓVEL (não do leiloeiro).
