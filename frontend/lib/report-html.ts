@@ -880,6 +880,9 @@ function __initReportMap__(){
   }
   function compInfoHtml(c){
     var ppm2 = (c.price && c.area) ? (c.price/c.area) : null;
+    // URLs sintéticas (formato ".../#item=hash") apontam para a página
+    // de busca, não para o imóvel — não devem ser clicáveis.
+    var isSynth = c.sourceUrl && String(c.sourceUrl).indexOf("#item=") !== -1;
     return '<div style="font:12px system-ui;padding:2px">'+
       '<div style="font-weight:600">Comparável #'+c.idx+(c.used?'':' <span style="color:#dc2626;font-weight:400">(rejeitado)</span>')+'</div>'+
       '<div style="font-size:11px;color:#64748b">'+escHtml(c.neighborhood||'—')+' · '+escHtml(c.city||'—')+'/'+escHtml(c.state||'—')+'</div>'+
@@ -890,7 +893,11 @@ function __initReportMap__(){
         '<tr><td style="color:#64748b">Quartos / Vagas</td><td style="text-align:right">'+(c.bedrooms??'—')+' / '+(c.parking??'—')+'</td></tr>'+
         '<tr><td style="color:#64748b">Distância</td><td style="text-align:right">'+(c.distanceM!=null?Math.round(c.distanceM)+' m':'—')+'</td></tr>'+
       '</table>'+
-      (c.sourceUrl? '<div style="margin-top:6px"><a href="'+escHtml(c.sourceUrl)+'" target="_blank" rel="noreferrer" style="color:#2563eb;font-weight:500">Abrir anúncio ↗</a></div>':'')+
+      (c.sourceUrl && !isSynth
+        ? '<div style="margin-top:6px"><a href="'+escHtml(c.sourceUrl)+'" target="_blank" rel="noreferrer" style="color:#2563eb;font-weight:500">Abrir anúncio ↗</a></div>'
+        : (isSynth
+            ? '<div style="margin-top:6px;font-size:10px;color:#92400e" title="Link específico do imóvel não disponível: o anúncio foi extraído de uma página de busca, mas a URL canônica não pôde ser identificada.">⚠ Link específico indisponível</div>'
+            : ''))+
       '</div>';
   }
   function makeCompMarker(c, pos){

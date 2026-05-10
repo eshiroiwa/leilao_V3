@@ -1,8 +1,24 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
+import { AlertTriangle, ExternalLink } from "lucide-react";
 
 import type { ValuationComparable } from "@/lib/api";
+
+/**
+ * Detecta URLs "sintéticas" geradas pelo backend quando o LLM falhou em
+ * capturar a URL canônica do anúncio individual. O formato é sempre
+ * ``{parent_url}#item={hash}`` (ver
+ * ``backend/app/agents/comparables/nodes.py::_synthetic_listing_url``).
+ *
+ * Esses links levam à PÁGINA DE BUSCA do portal (não ao imóvel), porque
+ * o ``#item=...`` é um anchor interno nosso — o portal não interpreta.
+ * Sinalizamos visualmente pra o usuário não cair na lista achando que
+ * é o anúncio. URLs canônicas reais NUNCA têm fragment ``#item=``.
+ */
+function isSyntheticListingUrl(url: string | null | undefined): boolean {
+  if (!url) return true;
+  return url.includes("#item=");
+}
 
 export function ComparablesTable({ comparables }: { comparables: ValuationComparable[] }) {
   if (comparables.length === 0) {
@@ -44,15 +60,34 @@ export function ComparablesTable({ comparables }: { comparables: ValuationCompar
               >
                 <td className="px-3 py-2 font-mono">{i + 1}</td>
                 <td className="px-3 py-2">
-                  <a
-                    href={l.source_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-blue-600 hover:underline"
-                  >
-                    {l.neighborhood ?? l.city ?? l.source}{" "}
-                    <ExternalLink className="size-3" />
-                  </a>
+                  {isSyntheticListingUrl(l.source_url) ? (
+                    // Link "indisponível": o LLM extraiu o card mas não
+                    // capturou a URL canônica do imóvel. Não-clicável (cairia
+                    // na página de busca do portal, ruim de UX).
+                    <span
+                      className="inline-flex items-center gap-1 text-muted-foreground"
+                      title={
+                        "Link específico do imóvel não disponível: o anúncio " +
+                        "foi extraído de uma página de busca, mas a URL " +
+                        "canônica do anúncio individual não pôde ser " +
+                        "identificada. Os dados (preço, área, etc.) estão " +
+                        "corretos."
+                      }
+                    >
+                      {l.neighborhood ?? l.city ?? l.source}{" "}
+                      <AlertTriangle className="size-3 text-amber-600" />
+                    </span>
+                  ) : (
+                    <a
+                      href={l.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-600 hover:underline"
+                    >
+                      {l.neighborhood ?? l.city ?? l.source}{" "}
+                      <ExternalLink className="size-3" />
+                    </a>
+                  )}
                   <div className="text-[10px] text-muted-foreground">
                     {l.source} · geo {l.geocoding_confidence ?? "?"}
                   </div>

@@ -351,39 +351,154 @@ def _synthetic_listing_url(parent_url: str, idx: int, raw: dict[str, Any]) -> st
     return f"{parent_url.rstrip('/')}{sep}item={sig}"
 
 
-def _resolve_listing_url(
-    *, raw: dict[str, Any], parent_url: str, idx: int
-) -> tuple[str, bool]:
-    """Decide a `source_url` final do listing extraído de uma página de busca.
+def _llm_resolved_url(
+    *, raw: dict[str, Any], parent_url: str
+) -> str | None:
+    """Tenta validar a ``source_url`` que o LLM extraiu para o card.
 
-    Preferência: usar a URL real que o LLM achou no markdown (campo
-    ``raw.source_url``), validada:
-      * deve ser absoluta http(s);
-      * deve casar com algum `SourceAdapter` conhecido;
-      * deve ser um anúncio individual (`is_listing_url`);
-      * HOST precisa coincidir EXATAMENTE com o do `parent_url`
-        (anti-alucinação: evita "scrapeei vivareal e o LLM devolveu link
-        do zap"; embora ambos sejam do mesmo grupo, o card real só
-        aponta para o portal de origem).
+    Retorna a URL canônica se passou em todas as validações; ``None`` se
+    o LLM não devolveu URL útil (campo vazio, não-http, host divergente,
+    não é anúncio individual). Nesse caso o caller tenta a reconciliação
+    determinística via markdown antes de cair no fallback sintético.
 
-    Se qualquer validação falhar, cai no `_synthetic_listing_url` (hash).
-    Devolve `(url, is_real)` — o flag é só para logging/diagnóstico.
+    Validações:
+      * absoluta http(s);
+      * casa com algum ``SourceAdapter`` conhecido;
+      * é anúncio individual (``is_listing_url``);
+      * HOST coincide exatamente com o do ``parent_url`` (anti-alucinação:
+        evita "scrapeei vivareal e o LLM devolveu link do zap"; embora
+        sejam do mesmo grupo, o card real só aponta pro portal de origem).
     """
     raw_url = (raw.get("source_url") or "").strip()
     if not raw_url:
-        return _synthetic_listing_url(parent_url, idx, raw), False
-
+        return None
     if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
-        return _synthetic_listing_url(parent_url, idx, raw), False
-
+        return None
     adapter = find_adapter(raw_url)
     if adapter is None or not adapter.is_listing_url(raw_url):
-        return _synthetic_listing_url(parent_url, idx, raw), False
-
+        return None
     if _normalize_host(raw_url) != _normalize_host(parent_url):
-        return _synthetic_listing_url(parent_url, idx, raw), False
+        return None
+    return adapter.canonicalize_url(raw_url)
 
-    return adapter.canonicalize_url(raw_url), True
+
+def _slug_contains_area(slug: str, area_m2: float | int | None) -> bool:
+    """Heurística: o slug da URL canônica contém ``{area}m2`` exato?
+
+    Padrões observados:
+      * VivaReal/ZAP: ``...maringa-148m2-id-2773220442/``
+      * ChavesNaMão: ``...com-3-quartos-RS550000-148m2/id-31871873/``
+      * ImovelWeb: ``...148m2-2999680136.html`` (raro, mas consistente)
+
+    Comparamos pelo INTEIRO arredondado — o slug nunca tem decimais.
+    """
+    if area_m2 is None:
+        return False
+    try:
+        target = int(round(float(area_m2)))
+    except (TypeError, ValueError):
+        return False
+    if target <= 0:
+        return False
+    # Casa "144m2" mas não "1144m2" ou "144m20" (boundary com word/separador).
+    return bool(
+        re.search(rf"(?<!\d){target}m2(?!\d)", slug, flags=re.IGNORECASE)
+    )
+
+
+def _reconcile_listing_urls(
+    *,
+    raw_listings: list[dict[str, Any]],
+    parent_url: str,
+    parent_markdown: str,
+) -> list[tuple[str, bool]]:
+    """Atribui uma ``source_url`` a cada listing do batch.
+
+    Política em três camadas, do mais confiável ao mais conservador:
+
+    1. **LLM validado** — usa a URL que o LLM extraiu, se passar nos
+       checks de :func:`_llm_resolved_url`.
+
+    2. **Reconciliação determinística** — para os cards onde o LLM falhou,
+       extrai todas as URLs canônicas presentes no markdown da parent
+       (regex via ``SourceAdapter.find_listing_urls_in_markdown``) e tenta:
+
+         a. **match semântico por área**: se exatamente UMA URL canônica
+            disponível tem ``{area}m2`` no slug E o listing tem
+            ``area_total_m2``, atribui essa URL. Funciona muito bem em
+            bairros pequenos onde áreas raramente colidem.
+
+         b. **match posicional**: pega a próxima URL canônica do pool
+            (em ordem de aparição no markdown). Funciona porque o LLM
+            extrai cards na ordem natural da página — quando ele falha
+            em capturar a URL, é por viés de truncagem, não por
+            reordenação.
+
+    3. **Fallback sintético** — se nada bateu, hash estável
+       (:func:`_synthetic_listing_url`). O frontend pode então marcar
+       o link como "indisponível" em vez de mandar o usuário pra lista.
+
+    Devolve lista paralela aos ``raw_listings`` com ``(url, is_real)``,
+    onde ``is_real`` indica se a URL é canônica (qualquer das duas
+    primeiras camadas) ou sintética.
+    """
+    adapter = find_adapter(parent_url)
+    canonical_pool: list[str] = []
+    if adapter is not None:
+        try:
+            canonical_pool = adapter.find_listing_urls_in_markdown(
+                parent_markdown
+            )
+        except Exception as exc:
+            logger.warning(
+                "cma.extract.reconcile.regex_fail",
+                url=parent_url,
+                error=str(exc),
+            )
+
+    used: set[str] = set()
+    resolved: list[tuple[str, bool]] = []
+
+    # Pass 1: aceita URL do LLM e marca-a como já usada (não pode entrar
+    # no pool de reconciliação em segunda passada).
+    pre_resolved: list[str | None] = []
+    for raw in raw_listings:
+        llm_url = _llm_resolved_url(raw=raw, parent_url=parent_url)
+        pre_resolved.append(llm_url)
+        if llm_url is not None:
+            used.add(llm_url)
+
+    # Pass 2: reconcilia os que faltaram.
+    for idx, raw in enumerate(raw_listings):
+        if pre_resolved[idx] is not None:
+            resolved.append((pre_resolved[idx], True))
+            continue
+
+        # 2a. Tenta match semântico por área (mais confiável).
+        area = raw.get("area_total_m2")
+        candidates = [
+            u for u in canonical_pool
+            if u not in used and _slug_contains_area(u, area)
+        ]
+        if len(candidates) == 1:
+            picked = candidates[0]
+            used.add(picked)
+            resolved.append((picked, True))
+            continue
+
+        # 2b. Match posicional: próxima URL canônica disponível.
+        picked = next((u for u in canonical_pool if u not in used), None)
+        if picked is not None:
+            used.add(picked)
+            resolved.append((picked, True))
+            continue
+
+        # 3. Fallback sintético.
+        resolved.append(
+            (_synthetic_listing_url(parent_url, idx, raw), False)
+        )
+
+    return resolved
 
 
 def _normalize_host(url: str) -> str:
@@ -446,15 +561,25 @@ def node_extract_listings(state: ComparablesState) -> dict[str, Any]:
             except Exception as exc:
                 logger.warning("cma.extract.batch.fail", url=url, error=str(exc))
                 return [], {"kind": "batch_fail", "url": url}
+            # Filtra cards sem dados mínimos (preço/área) ANTES de reconciliar.
+            kept_subs: list[Any] = [
+                s
+                for s in batch.listings
+                if s.listed_price is not None and s.area_total_m2 is not None
+            ]
+            kept_raws = [s.model_dump() for s in kept_subs]
+            # Reconciliação determinística: LLM-validado → semântica → posicional
+            # → sintético. Ver :func:`_reconcile_listing_urls`.
+            resolved = _reconcile_listing_urls(
+                raw_listings=kept_raws,
+                parent_url=url,
+                parent_markdown=item["markdown"],
+            )
             out_items: list[dict[str, Any]] = []
             n_real_url = 0
-            for idx, sub in enumerate(batch.listings):
-                if sub.listed_price is None or sub.area_total_m2 is None:
-                    continue
-                raw_dump = sub.model_dump()
-                resolved_url, is_real = _resolve_listing_url(
-                    raw=raw_dump, parent_url=url, idx=idx
-                )
+            for raw_dump, (resolved_url, is_real) in zip(
+                kept_raws, resolved, strict=True
+            ):
                 if is_real:
                     n_real_url += 1
                 # Sobrescreve para ficar consistente entre `source_url` do

@@ -28,6 +28,15 @@ from app.agents.comparables.sources.base import SourceAdapter
 # Captura "id-1234567" no final do path do anúncio.
 _ID_RE = re.compile(r"-id-(\d+)/?$", re.IGNORECASE)
 
+# URLs canônicas de anúncio individual no markdown — usado pelo fallback
+# determinístico para reconciliar cards quando o LLM devolve só a parent.
+# Padrão: ``https://www.{vivareal,zapimoveis}.com.br/imovel/...-id-{N}/``.
+_LISTING_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:vivareal|zapimoveis)\.com\.br/imovel/"
+    r"[^\s\"'<>)\]]+?-id-\d+/?",
+    re.IGNORECASE,
+)
+
 # Só queremos VENDA. /aluguel/ e /lancamentos/ não são comparáveis para
 # preço de mercado de venda.
 _VENDA_PATH = "/venda/"
@@ -60,6 +69,7 @@ class VivaRealZapAdapter(SourceAdapter):
 
     name = "vivareal_zap"
     domains = ("vivareal.com.br", "zapimoveis.com.br")
+    listing_url_pattern = _LISTING_URL_RE
 
     # ---- Anúncio individual ------------------------------------------- #
     def is_listing_url(self, url: str) -> bool:

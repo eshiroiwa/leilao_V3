@@ -35,6 +35,15 @@ from app.agents.comparables.sources.base import SourceAdapter
 # ``/imovel/.../id-{NNN}/?`` — captura o id externo no final do path.
 _ID_RE = re.compile(r"/id-(\d+)/?$", re.IGNORECASE)
 
+# URLs canônicas de anúncio individual no markdown — usado pelo fallback
+# determinístico de reconciliação. Padrão:
+# ``https://www.chavesnamao.com.br/imovel/...{slug}/id-{N}/``.
+_LISTING_URL_RE = re.compile(
+    r"https?://(?:www\.)?chavesnamao\.com\.br/imovel/"
+    r"[^\s\"'<>)\]]+?/id-\d+/?",
+    re.IGNORECASE,
+)
+
 # Categorias VÁLIDAS para venda (primeiro segmento do path).
 # Aceitamos tanto a forma "-a-venda" explícita quanto a curta (sem sufixo),
 # que o ChavesNaMão usa como atalho para listagens de venda.
@@ -80,6 +89,7 @@ class ChavesNaMaoAdapter(SourceAdapter):
 
     name = "chavesnamao"
     domains = ("chavesnamao.com.br",)
+    listing_url_pattern = _LISTING_URL_RE
 
     # ---- Anúncio individual ------------------------------------------- #
     def is_listing_url(self, url: str) -> bool:

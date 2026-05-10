@@ -40,6 +40,14 @@ from app.agents.comparables.sources.base import SourceAdapter
 # aparecem no slug de POIs (ex.: "rua-francisco-leitao-577.html").
 _LISTING_ID_RE = re.compile(r"-(\d{8,})\.html$", re.IGNORECASE)
 
+# URLs canônicas de anúncio individual no markdown — usado pelo fallback
+# determinístico para reconciliar cards quando o LLM devolve só a parent.
+_LISTING_URL_RE = re.compile(
+    r"https?://(?:www\.)?imovelweb\.com\.br/propriedades/"
+    r"[^\s\"'<>)\]]+?-\d{8,}\.html",
+    re.IGNORECASE,
+)
+
 # Categorias VÁLIDAS para venda no nome do arquivo da listagem.
 # O ImovelWeb codifica `categoria-venda-...-` como prefixo. Mantemos uma
 # whitelist explícita para evitar capturar páginas institucionais.
@@ -83,6 +91,7 @@ class ImovelWebAdapter(SourceAdapter):
 
     name = "imovelweb"
     domains = ("imovelweb.com.br",)
+    listing_url_pattern = _LISTING_URL_RE
 
     # ---- Anúncio individual ------------------------------------------- #
     def is_listing_url(self, url: str) -> bool:
