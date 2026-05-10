@@ -381,18 +381,26 @@ def test_cma_aborts_when_property_missing() -> None:
 # =============================================================================
 # Cenário 5 — Comparável atípico (área muito diferente) é rejeitado
 # =============================================================================
-def test_cma_atypical_target_recuses() -> None:
-    """Alvo de 200m² em bairro de 70m² — comparáveis ficam fora dos critérios
-    rígidos (área ±40%) e o resultado é INSUFFICIENT."""
+def test_cma_atypical_target_rejected_by_area_hard_filter() -> None:
+    """Alvo de 200m² em bairro de comparáveis com 70m² — TypeConfig de
+    apartamento tem ``area_hard_max=0.35`` (e relaxado=0.55). |Δ área|/200
+    = 65% → fora de ambas as faixas. Mesmo após esgotar raios,
+    relaxamento e troca de estratégia, todos os comparáveis ficam
+    rejeitados → confidence INSUFFICIENT.
+
+    Esse comportamento é DELIBERADO (P0.2): comparar mansão de 200m²
+    com kitnets de 70m² distorce o R$/m² e gera estimativa enganosa.
+    Vale mais avisar o usuário que a CMA falhou (INSUFFICIENT) do que
+    devolver um número não-defensável."""
     from app.agents.comparables.graph import build_comparables_graph
 
-    target = _target(area_total_m2=200.0)  # gigante para o bairro
+    target = _target(area_total_m2=200.0)
     urls = [_vivareal_url(i) for i in range(5)]
 
     sb, fc, gm, chain = _wire_mocks(
         target=target,
         search_urls=urls,
-        extracted_prices=[700_000.0] * 5,  # áreas dos comps = 70m² (no _llm_listing)
+        extracted_prices=[700_000.0] * 5,
         geocode_offsets_m=[(100, 100)] * 5,
     )
 
@@ -413,13 +421,15 @@ def test_cma_atypical_target_recuses() -> None:
             "cost_estimate_brl": 0.0,
         })
 
-    # NOTE: nesta versão MVP não temos hard-filter por área no node_score
-    # (deliberado — confiamos no peso). O atípico ainda passa, mas o teste
-    # verifica que pelo menos o sistema não crasha e o ppm² estimado fica
-    # plausivelmente alto (10000) → preço total ~2 milhões.
-    assert final["confidence"] != "INSUFFICIENT"  # tem >= 3 comparáveis
-    assert final["estimated_price"] is not None
-    assert final["estimated_price"] >= 1_500_000  # 200m² × ~10k/m²
+    assert final["confidence"] == "INSUFFICIENT"
+    assert final["estimated_price"] is None
+    # O motivo de rejeição predominante deve ser hard filter de área.
+    rej_areas = [
+        s.get("rejection_reason") or ""
+        for s in final.get("scored_comparables") or []
+        if not s.get("used")
+    ]
+    assert any("area_outside_tolerance" in r for r in rej_areas), rej_areas
 
 
 # =============================================================================

@@ -6,12 +6,15 @@ import pytest
 
 from app.agents.comparables.scoring import (
     RELIABILITY_THRESHOLD,
+    area_outside_tolerance,
     condo_match_score,
     haversine_m,
+    is_likely_target_self,
     normalize_condo_name,
     reliability_score,
     similarity_score,
 )
+from app.agents.comparables.type_config import _BY_TYPE
 
 
 # =============================================================================
@@ -201,3 +204,234 @@ def test_reliability_postal_code_cap() -> None:
     listing = _baseline_listing() | {"geocoding_confidence": "POSTAL_CODE"}
     score = reliability_score(listing)
     assert score <= 0.55, score  # cap aplicado
+
+
+# =============================================================================
+# is_likely_target_self
+#
+# Cenário canônico: o anúncio do PRÓPRIO IMÓVEL DO LEILÃO num portal
+# de mercado (chavesnamao etc.). Bate em: distância < 50m + área
+# idêntica + preço == minimum_bid_first/second/appraisal.
+# =============================================================================
+def _self_target() -> dict:
+    return {
+        "latitude": -20.5586,
+        "longitude": -48.5687,
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "minimum_bid_first": 350_000.0,
+        "minimum_bid_second": 280_000.0,
+        "appraisal_value": 500_000.0,
+    }
+
+
+def test_is_self_when_distance_area_and_price_match_first_bid() -> None:
+    target = _self_target()
+    comp = {
+        "latitude": target["latitude"] + 0.0001,  # ~11m
+        "longitude": target["longitude"] + 0.0001,
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "listed_price": 350_500.0,  # ~0.14% do bid_first
+    }
+    assert is_likely_target_self(target, comp) is True
+
+
+def test_is_self_matches_appraisal_value_too() -> None:
+    target = _self_target()
+    comp = {
+        "latitude": target["latitude"],
+        "longitude": target["longitude"],
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "listed_price": 500_000.0,  # bate com appraisal_value exato
+    }
+    assert is_likely_target_self(target, comp) is True
+
+
+def test_not_self_when_far_away() -> None:
+    target = _self_target()
+    comp = {
+        "latitude": target["latitude"] + 0.005,  # ~550m
+        "longitude": target["longitude"],
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "listed_price": 350_000.0,
+    }
+    assert is_likely_target_self(target, comp) is False
+
+
+def test_not_self_when_area_diverges() -> None:
+    target = _self_target()
+    comp = {
+        "latitude": target["latitude"],
+        "longitude": target["longitude"],
+        "area_total_m2": 250.0,  # +25% — fora dos 2%
+        "area_built_m2": 180.0,
+        "property_type": "casa",
+        "listed_price": 350_000.0,
+    }
+    assert is_likely_target_self(target, comp) is False
+
+
+def test_not_self_when_price_diverges_from_all_refs() -> None:
+    target = _self_target()
+    comp = {
+        "latitude": target["latitude"],
+        "longitude": target["longitude"],
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "listed_price": 800_000.0,  # nem bid_1, nem bid_2, nem appraisal
+    }
+    assert is_likely_target_self(target, comp) is False
+
+
+def test_not_self_without_geo_data() -> None:
+    """Sem latitude/longitude não dá pra afirmar self — conservador."""
+    target = _self_target()
+    comp = {
+        "latitude": None,
+        "longitude": None,
+        "area_total_m2": 200.0,
+        "area_built_m2": 145.0,
+        "property_type": "casa",
+        "listed_price": 350_000.0,
+    }
+    assert is_likely_target_self(target, comp) is False
+
+
+# =============================================================================
+# area_outside_tolerance
+#
+# Hard filter de área: rejeita comparáveis muito maiores/menores que
+# o alvo segundo a TypeConfig. Apartamento ±35%, casa ±50%, ...
+# =============================================================================
+def test_apt_50pct_bigger_is_rejected_strict() -> None:
+    """Apartamento alvo 70m² × comp 105m² (=+50%) > 35% → rejeita."""
+    target = {"property_type": "apartamento", "area_built_m2": 70.0}
+    comp = {"area_built_m2": 105.0}
+    reason = area_outside_tolerance(target, comp)
+    assert reason is not None
+    assert "area_outside_tolerance" in reason
+
+
+def test_apt_50pct_bigger_passes_relaxed() -> None:
+    """Mesmo caso com ``relaxed=True`` (±55%): 50% < 55% → passa."""
+    target = {"property_type": "apartamento", "area_built_m2": 70.0}
+    comp = {"area_built_m2": 105.0}
+    assert area_outside_tolerance(target, comp, relaxed=True) is None
+
+
+def test_house_uses_built_not_total_for_filter() -> None:
+    """Casa de 250m² de TERRENO + 145m² CONSTRUÍDOS vs comp 220m² de
+    terreno + 140m² construídos.
+
+    Se o filtro usasse ``area_total_m2``, a diferença seria
+    |220-250|/250=12% (passa). Mas o que importa é construído:
+    |140-145|/145=3% (também passa). O ponto deste teste é
+    GARANTIR que o ``area_field='auto'`` resolveu para built (E5)."""
+    target = {
+        "property_type": "casa",
+        "area_total_m2": 250.0,
+        "area_built_m2": 145.0,
+    }
+    comp = {"area_total_m2": 220.0, "area_built_m2": 140.0}
+    assert area_outside_tolerance(target, comp) is None
+
+
+def test_house_built_area_diff_rejects_even_if_total_close() -> None:
+    """Casa alvo 145m² construídos × comp com 250m² construídos
+    (=+72%, > 50% strict). Rejeita pelo construído mesmo que terreno
+    seja parecido (que é exatamente o bug que a P0.3 corrige)."""
+    target = {
+        "property_type": "casa",
+        "area_total_m2": 250.0,
+        "area_built_m2": 145.0,
+    }
+    comp = {"area_total_m2": 240.0, "area_built_m2": 250.0}
+    reason = area_outside_tolerance(target, comp)
+    assert reason is not None
+
+
+def test_terreno_filter_uses_total_field() -> None:
+    """Terreno alvo 1000m² × comp 1100m² → diff 10%, passa.
+    Comp 2000m² → diff 100%, rejeita strict (área_hard_max=50%)."""
+    target = {"property_type": "terreno", "area_total_m2": 1000.0}
+    assert area_outside_tolerance(target, {"area_total_m2": 1100.0}) is None
+    reason = area_outside_tolerance(target, {"area_total_m2": 2000.0})
+    assert reason is not None
+
+
+def test_no_filter_when_areas_missing() -> None:
+    """Filtro silenciosamente passa se faltar área de qualquer dos lados
+    — o filtro de "sem preço/área" do score cobre o caso totalmente
+    vazio."""
+    target = {"property_type": "casa", "area_built_m2": 145.0}
+    assert area_outside_tolerance(target, {}) is None
+    assert (
+        area_outside_tolerance({"property_type": "casa"}, {"area_built_m2": 145.0})
+        is None
+    )
+
+
+# =============================================================================
+# similarity_score: invariantes do P0.3 (area_field correto por tipo)
+# =============================================================================
+def test_similarity_house_uses_built_not_total() -> None:
+    """Casa alvo 145m² construídos × terreno 250m² no banco. Comp
+    com mesma metragem construída (140m²) mas terreno totalmente
+    diferente (1000m²) deve pontuar ALTO no eixo área — o terreno
+    é irrelevante pra preço de casa de rua."""
+    target = {
+        "property_type": "casa",
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "area_total_m2": 250.0,
+        "area_built_m2": 145.0,
+    }
+    comp_same_built = {
+        "property_type": "casa",
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "area_total_m2": 1000.0,  # terreno bem maior
+        "area_built_m2": 140.0,  # mas construção parecida
+    }
+    comp_diff_built = {
+        "property_type": "casa",
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "area_total_m2": 240.0,  # terreno parecido
+        "area_built_m2": 50.0,  # mas construção bem menor
+    }
+    s_same = similarity_score(target, comp_same_built)
+    s_diff = similarity_score(target, comp_diff_built)
+    assert s_same > s_diff, (s_same, s_diff)
+
+
+def test_similarity_uses_explicit_config() -> None:
+    """Passar ``config`` explicitamente sobrescreve o auto-detect.
+    Útil para A/B em produção sem mudar o property_type."""
+    # Mesma área em "total" e "built" para isolar o efeito do sigma.
+    target = {
+        "property_type": "apartamento",
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "area_total_m2": 70.0,
+        "area_built_m2": 70.0,
+    }
+    comp = {
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "area_total_m2": 80.0,
+        "area_built_m2": 80.0,
+    }
+    sigma_apt = similarity_score(target, comp)
+    sigma_rural = similarity_score(target, comp, config=_BY_TYPE["rural"])
+    # Sigma maior (rural=0.50 vs apartamento=0.15) → score de área MAIOR
+    # para a mesma diferença → similarity total >= apt.
+    assert sigma_rural >= sigma_apt

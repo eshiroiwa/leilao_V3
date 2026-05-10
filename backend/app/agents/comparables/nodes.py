@@ -29,8 +29,10 @@ from app.agents.comparables.prompts import (
 from app.agents.comparables.schemas import ExtractedListing, ListingBatch
 from app.agents.comparables.scoring import (
     RELIABILITY_THRESHOLD,
+    area_outside_tolerance,
     condo_match_score,
     haversine_m,
+    is_likely_target_self,
     reliability_score,
     similarity_score,
 )
@@ -43,6 +45,7 @@ from app.agents.comparables.search import (
 )
 from app.agents.comparables.sources import find_adapter
 from app.agents.comparables.state import ComparablesState
+from app.agents.comparables.type_config import get_type_config
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.firecrawl_service import FirecrawlScrapeError, get_firecrawl_service
@@ -153,23 +156,36 @@ def node_build_query(state: ComparablesState) -> dict[str, Any]:
     plan = radius_plan(target.get("city"), target.get("state"))
     initial_radius = plan[0]
 
-    # Condomínio detectado → começa por 'condo'; senão tenta street.
-    if detect_condo_name(target):
-        strategy: SearchStrategy = "condo"
-    elif (target.get("street") or "").strip():
-        strategy = "street"
-    else:
-        strategy = "neighborhood"
+    # A estratégia inicial é o PRIMEIRO ITEM de
+    # ``TypeConfig.preferred_strategies`` que tem dado disponível no
+    # target. Apartamento prefere ``condo`` (ancora no prédio); casa
+    # de rua prefere ``street``; galpão direto em ``neighborhood``.
+    # Quando nada bate, cai em ``neighborhood`` (sempre disponível
+    # se a property tem city+state).
+    effective_type, type_config = get_type_config(target)
+    has = {
+        "condo": bool(detect_condo_name(target)),
+        "street": bool((target.get("street") or "").strip()),
+        "neighborhood": bool((target.get("neighborhood") or "").strip()),
+        "radius": True,  # último recurso, não gera queries
+    }
+    strategy: SearchStrategy = "neighborhood"
+    for s in type_config.preferred_strategies:
+        if has.get(s, False) and s != "radius":
+            strategy = s  # type: ignore[assignment]
+            break
 
     queries = build_queries(target, strategy=strategy)
     if not queries and strategy != "neighborhood":
-        # Fallback imediato para neighborhood sem gastar 0 queries
+        # Fallback imediato para neighborhood (sempre dá pra montar
+        # com city+state).
         strategy = "neighborhood"
         queries = build_queries(target, strategy=strategy)
 
     logger.info(
         "cma.build_query",
         strategy=strategy,
+        effective_type=effective_type,
         n_queries=len(queries),
         initial_radius_m=initial_radius,
     )
@@ -829,13 +845,23 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
     target = state.get("target") or {}
     enriched = state.get("enriched_listings") or []
     radius_m = state.get("search_radius_m") or 2000
+    # Modo "tolerância de área relaxada" — ativado pelo `check_minimum`
+    # quando esgotamos as outras formas de aumentar recall (ver nó).
+    area_relaxed = bool(state.get("area_filter_relaxed"))
+
+    # Resolve a config UMA vez para o target (apartamento/casa/casa_condominio/
+    # comercial/galpão/terreno/rural). Define area_field, sigma, hard filter,
+    # tolerâncias de auto-self.
+    effective_type, type_config = get_type_config(target)
 
     scored: list[dict[str, Any]] = []
     for listing in enriched:
         rel = listing.get("reliability_score") or reliability_score(listing)
         rel = float(rel)
 
-        # Hard filter: tipo igual
+        # Hard filter: tipo igual (continua usando o tipo BRUTO da listing
+        # vs do target — `casa_condominio` é uma promoção interna, mas a
+        # listing também é "casa" no banco).
         same_type = (
             (listing.get("property_type") or "").lower()
             == (target.get("property_type") or "").lower()
@@ -856,7 +882,7 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
                 float(listing["longitude"]),
             )
 
-        sim = similarity_score(target, listing)
+        sim = similarity_score(target, listing, config=type_config)
         weight = round(sim * rel, 4)
 
         # Override "mesma rua": geocoding APPROXIMATE para anúncios sem
@@ -877,14 +903,40 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
             == 1.0
         )
 
+        # Auto-self: o "comparável" é o anúncio do próprio imóvel do
+        # leilão num portal de mercado (típico em lotes Caixa). Tem que
+        # ser DESCARTADO antes de qualquer outro filtro — incluí-lo na
+        # CMA puxa o R$/m² para o lance, distorcendo a estimativa.
+        is_self = is_likely_target_self(target, listing, config=type_config)
+
+        # Hard filter de área: rejeita comparáveis com tamanho muito
+        # diferente do alvo. Tolerância vem da config do tipo (ex.: ±50%
+        # para casa, ±35% para apartamento). Se houver poucos comparáveis,
+        # o `check_minimum` re-roda este nó com `area_relaxed=True`, que
+        # usa `area_hard_max_relaxed`. ``same_condo`` é override (mesmo
+        # prédio sempre vale, mesmo se a área fugir do range — kitnet
+        # vs cobertura no mesmo edifício são comparáveis legítimos
+        # quando o mercado é específico ao prédio).
+        area_oob = (
+            None
+            if same_condo
+            else area_outside_tolerance(
+                target, listing, config=type_config, relaxed=area_relaxed
+            )
+        )
+
         used = True
         reason = None
-        if not listing.get("listed_price") or not listing.get("area_total_m2"):
+        if is_self:
+            used, reason = False, "auto_self: anúncio do próprio imóvel do leilão"
+        elif not listing.get("listed_price") or not listing.get("area_total_m2"):
             used, reason = False, "sem preço ou área"
         elif rel < RELIABILITY_THRESHOLD and not same_condo:
             used, reason = False, f"reliability={rel:.2f} < {RELIABILITY_THRESHOLD}"
         elif not same_type:
             used, reason = False, f"property_type≠{target.get('property_type')}"
+        elif area_oob is not None:
+            used, reason = False, area_oob
         elif (
             distance_m is not None
             and distance_m > radius_m
@@ -908,6 +960,7 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
                     and distance_m > radius_m
                 ),
                 "_same_condo": same_condo,
+                "_is_self": is_self,
                 # extra para o pricing logo abaixo
                 "_listed_price": listing.get("listed_price"),
                 "_area_total_m2": listing.get("area_total_m2"),
@@ -917,19 +970,24 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
 
     n_used = sum(1 for s in scored if s["used"])
     n_same_street_rescued = sum(1 for s in scored if s.get("_same_street_override"))
+    n_self_rejected = sum(1 for s in scored if s.get("_is_self"))
     # Breakdown por categoria do motivo de rejeição (útil para tuning).
     rej_buckets: dict[str, int] = {}
     for s in scored:
         if s["used"]:
             continue
         reason = s["rejection_reason"] or "outro"
-        # Agrupa por prefixo (ex.: "distance=3200m > 2500m" → "distance>radius").
-        if "sem preço" in reason or "sem area" in reason:
+        # Agrupa por prefixo.
+        if reason.startswith("auto_self"):
+            key = "auto_self"
+        elif "sem preço" in reason or "sem area" in reason:
             key = "sem_preco_ou_area"
         elif reason.startswith("reliability="):
             key = "baixa_reliability"
         elif reason.startswith("property_type"):
             key = "tipo_diferente"
+        elif reason.startswith("area_outside_tolerance"):
+            key = "area_fora_do_range"
         elif reason.startswith("distance="):
             key = "fora_do_raio"
         else:
@@ -942,7 +1000,11 @@ def node_score_similarity(state: ComparablesState) -> dict[str, Any]:
         n_used=n_used,
         n_rejected=len(scored) - n_used,
         radius_m=radius_m,
+        effective_type=effective_type,
+        area_field=type_config.area_field,
+        area_relaxed=area_relaxed or None,
         n_same_street_rescued=n_same_street_rescued or None,
+        n_self_rejected=n_self_rejected or None,
         rejection_breakdown=rej_buckets or None,
     )
     return {"scored_comparables": scored}
@@ -977,8 +1039,8 @@ def node_check_minimum(state: ComparablesState) -> dict[str, Any]:
     if n_used >= settings.cma_min_comparables_acceptable:
         return base_reset
 
-    # 1) Tenta expandir raio na mesma estratégia. NADA muda exceto radius_m
-    # → o conditional edge nos manda direto para `score_similarity`.
+    # 1) Expande raio (na mesma estratégia). Custo zero — só muda
+    # ``radius_m`` e re-roda ``score_similarity``.
     plan = radius_plan(target.get("city"), target.get("state"))
     cur_radius = state.get("search_radius_m") or plan[0]
     bigger = next((r for r in plan if r > cur_radius), None)
@@ -993,7 +1055,35 @@ def node_check_minimum(state: ComparablesState) -> dict[str, Any]:
         )
         return {**base_reset, "search_radius_m": bigger, "should_retry_score": True}
 
-    # 2) Esgotou o plano de raios → troca de estratégia (full search).
+    # 2) Esgotou raios. ANTES de trocar de estratégia (que dispara nova
+    # busca + scrape + LLM, custo alto), tenta RELAXAR a tolerância de
+    # área — esse passo também é grátis: só re-aplica o filtro com
+    # ``area_hard_max_relaxed`` em vez de ``area_hard_max``. Útil
+    # quando o bairro é heterogêneo e o filtro estrito está cortando
+    # demais (típico de casas em interior).
+    if not state.get("area_filter_relaxed"):
+        # Conta quantos foram rejeitados POR ÁREA — só vale a pena
+        # relaxar se houver candidatos especificamente nesse bucket.
+        n_rejected_by_area = sum(
+            1
+            for s in scored
+            if not s["used"]
+            and (s.get("rejection_reason") or "").startswith("area_outside_tolerance")
+        )
+        if n_rejected_by_area > 0:
+            logger.info(
+                "cma.expand.area_relaxed",
+                n_used=n_used,
+                n_rejected_by_area=n_rejected_by_area,
+                min_required=settings.cma_min_comparables_acceptable,
+            )
+            return {
+                **base_reset,
+                "area_filter_relaxed": True,
+                "should_retry_score": True,
+            }
+
+    # 3) Última cartada antes da expansão cara: troca de estratégia.
     cur_strategy = state.get("search_strategy") or "neighborhood"
     nxt = next_strategy(cur_strategy)
     if nxt and nxt != "radius":
@@ -1013,7 +1103,7 @@ def node_check_minimum(state: ComparablesState) -> dict[str, Any]:
                 "should_retry_search": True,
             }
 
-    # 3) Sem mais cartas: segue para o pricing com o que tiver (vai
+    # 4) Sem mais cartas: segue para o pricing com o que tiver (vai
     # provavelmente cair em INSUFFICIENT, mas o usuário verá o motivo).
     logger.info("cma.expand.exhausted", n_used=n_used)
     return base_reset

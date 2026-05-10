@@ -79,6 +79,12 @@ class ComparablesState(TypedDict, total=False):
     """True ⇒ refazer `search_listings` em diante (novo Firecrawl).  Setado
     quando trocamos para uma estratégia mais ampla (street → neighborhood)."""
 
+    area_filter_relaxed: bool
+    """True ⇒ ``score_similarity`` aplica ``area_hard_max_relaxed`` em vez
+    de ``area_hard_max`` (tolerância maior para |Δ área| relativa). Setado
+    pelo ``check_minimum`` quando esgotamos raios E o bucket de rejeições
+    "área fora do range" tem candidatos que poderiam ser reaproveitados."""
+
     # ---------- Sinalizações ----------
     warnings: list[str]
     errors: list[str]
