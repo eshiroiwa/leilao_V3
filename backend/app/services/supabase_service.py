@@ -503,6 +503,50 @@ class SupabaseService:
         return res.data or []
 
     # ------------------------------------------------------------------ #
+    # FipeZAP — preço médio R$/m² por cidade (alimentada por
+    # ``scripts/update_fipezap.py``).
+    # ------------------------------------------------------------------ #
+    def get_latest_city_ppm2(
+        self, *, city: str, state: str | None = None
+    ) -> dict[str, Any] | None:
+        """Devolve a leitura FipeZAP mais recente para ``(city, state)``.
+
+        Quando ``state`` é informado, filtra também por UF (importante para
+        cidades homônimas — ex.: Campinas SP vs Campinas RJ). Retorna
+        ``None`` quando não há leitura para a cidade. NÃO levanta — uma
+        falha de consulta vira ``None`` para que o caller siga sem
+        depender de FipeZAP estar populado.
+
+        Resultado normalizado:
+            {
+              "city": str, "state": str | None,
+              "mean_ppm2_brl": float,
+              "asof_year": int, "asof_month": int,
+            }
+        """
+        if not city:
+            return None
+        try:
+            q = self._client.table("city_ppm2_stats").select(
+                "city,state,mean_ppm2_brl,asof_year,asof_month"
+            ).eq("city", city)
+            if state:
+                q = q.eq("state", state)
+            res = (
+                q.order("asof_year", desc=True)
+                .order("asof_month", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            # Tabela inexistente, RLS bloqueando, conexão fora — em todos
+            # os casos é "fallback ausente", não erro do balisador.
+            logger.warning("supabase.city_ppm2.fetch_failed", error=str(exc))
+            return None
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
     # Listings vizinhos (AGENTE 4 — busca por raio)
     # ------------------------------------------------------------------ #
     def find_listings_near(

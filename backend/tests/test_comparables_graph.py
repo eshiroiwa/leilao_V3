@@ -122,6 +122,9 @@ def _wire_mocks(
 
     sb.get_property_by_id.return_value = target
     sb.get_listings_by_urls.return_value = cached_listings or []
+    # FipeZAP sanity check: tabela vazia por default nos testes do graph
+    # (não exercitamos a integração com city_ppm2_stats aqui).
+    sb.get_latest_city_ppm2.return_value = None
 
     # agent_runs
     sb.insert_agent_run.return_value = {"id": "run-1"}
