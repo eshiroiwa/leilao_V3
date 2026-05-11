@@ -4,7 +4,9 @@ import {
   Bath,
   BedDouble,
   CalendarOff,
+  Car,
   ExternalLink,
+  Gavel,
   MapPin,
   MapPinOff,
   Ruler,
@@ -25,6 +27,18 @@ import { cn, formatBRL, formatDateTimeBR } from "@/lib/utils";
 import { DeletePropertyButton } from "./DeletePropertyButton";
 import { OpportunityButton } from "./OpportunityButton";
 import { ValuateButton } from "./ValuateButton";
+
+/** Formata área em estilo "construída / total" quando AMBAS são distintas;
+ *  cai para uma só quando estão ausentes ou iguais. */
+function formatAreaDual(
+  built: number | null,
+  total: number | null,
+): string {
+  const b = built && built > 0 ? Math.round(built) : null;
+  const t = total && total > 0 ? Math.round(total) : null;
+  if (b != null && t != null && b !== t) return `${b}/${t}`;
+  return String(b ?? t ?? "");
+}
 
 const confidenceVariant: Record<
   string,
@@ -126,6 +140,25 @@ export function PropertyCard({
               {property.property_type}
             </Badge>
           )}
+          {property.legal_status && (
+            <Badge
+              variant="secondary"
+              className="bg-card/85 capitalize backdrop-blur-sm"
+              title="Modalidade do leilão"
+            >
+              <Gavel className="mr-1 size-3" /> {property.legal_status}
+            </Badge>
+          )}
+          {property.occupancy_status === "ocupado" && (
+            <Badge variant="warning" className="backdrop-blur-sm">
+              Ocupado
+            </Badge>
+          )}
+          {property.occupancy_status === "desocupado" && (
+            <Badge variant="success" className="backdrop-blur-sm">
+              Desocupado
+            </Badge>
+          )}
           {!hasGeo && (
             <Badge variant="warning" className="backdrop-blur-sm">
               <MapPinOff className="mr-1 size-3" /> sem geo
@@ -176,9 +209,18 @@ export function PropertyCard({
         )}
 
         <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          {property.area_total_m2 != null && (
-            <span className="inline-flex items-center gap-1">
-              <Ruler className="size-3.5" /> {property.area_total_m2} m²
+          {(property.area_total_m2 != null ||
+            property.area_built_m2 != null) && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={
+                property.area_built_m2 != null && property.area_total_m2 != null
+                  ? "Construída / total"
+                  : undefined
+              }
+            >
+              <Ruler className="size-3.5" />
+              {formatAreaDual(property.area_built_m2, property.area_total_m2)} m²
             </span>
           )}
           {property.bedrooms != null && (
@@ -191,6 +233,11 @@ export function PropertyCard({
               <Bath className="size-3.5" /> {property.bathrooms}
             </span>
           )}
+          {property.parking_spaces != null && property.parking_spaces > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <Car className="size-3.5" /> {property.parking_spaces}
+            </span>
+          )}
         </div>
 
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg bg-muted/40 p-2.5 text-xs">
@@ -199,24 +246,51 @@ export function PropertyCard({
             {formatBRL(property.appraisal_value)}
           </dd>
 
-          <dt className="text-muted-foreground">1ª praça</dt>
-          <dd className="text-right font-medium tabular-nums">
-            {formatBRL(property.minimum_bid_first)}
-          </dd>
-
-          <dt className="text-muted-foreground">2ª praça</dt>
-          <dd className="text-right font-medium tabular-nums text-primary-700">
-            {formatBRL(property.minimum_bid_second)}
-          </dd>
-
-          {property.first_auction_at && (
+          {property.minimum_bid_first != null && (
             <>
-              <dt className="text-muted-foreground">Data 1ª</dt>
-              <dd className="text-right">
-                {formatDateTimeBR(property.first_auction_at)}
+              <dt className="text-muted-foreground">1ª praça</dt>
+              <dd className="text-right font-medium tabular-nums">
+                {formatBRL(property.minimum_bid_first)}
               </dd>
+              {property.first_auction_at && (
+                <>
+                  <dt className="text-muted-foreground">Data 1ª</dt>
+                  <dd className="text-right">
+                    {formatDateTimeBR(property.first_auction_at)}
+                  </dd>
+                </>
+              )}
             </>
           )}
+
+          {property.minimum_bid_second != null && (
+            <>
+              <dt className="text-muted-foreground">2ª praça</dt>
+              <dd className="text-right font-medium tabular-nums text-primary-700">
+                {formatBRL(property.minimum_bid_second)}
+              </dd>
+              {property.second_auction_at && (
+                <>
+                  <dt className="text-muted-foreground">Data 2ª</dt>
+                  <dd className="text-right">
+                    {formatDateTimeBR(property.second_auction_at)}
+                  </dd>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Lance atual — só destacamos quando diverge do lance inicial
+              (significa que ALGUÉM já arrematou algo, sinal forte). */}
+          {property.current_bid != null &&
+            property.current_bid !== property.minimum_bid_first && (
+              <>
+                <dt className="text-muted-foreground">Lance atual</dt>
+                <dd className="text-right font-semibold tabular-nums text-warning-700">
+                  {formatBRL(property.current_bid)}
+                </dd>
+              </>
+            )}
         </dl>
 
         <div className="mt-auto flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
