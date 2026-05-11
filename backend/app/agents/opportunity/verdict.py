@@ -111,6 +111,8 @@ def build_warnings(
     renovation_cost: float | None = None,
     renovation_area_source: str | None = None,
     pj_regime: str = "presumido",
+    realista_annualized_roi: float | None = None,
+    cdi_annual: float | None = None,
 ) -> list[str]:
     """Lista heurística de avisos a serem mostrados no UI.
 
@@ -150,6 +152,19 @@ def build_warnings(
     if pessimista_net_profit < 0:
         warnings.append(
             "Cenário pessimista é deficitário — só prossiga se aceitar essa cauda de risco."
+        )
+
+    # Custo de oportunidade — ROI anualizado realista vs CDI atual.
+    # Só geramos warning se tivermos AMBOS os valores (CDI pode falhar).
+    if (
+        cdi_annual is not None
+        and realista_annualized_roi is not None
+        and realista_annualized_roi < cdi_annual
+    ):
+        warnings.append(
+            f"ROI anualizado realista ({realista_annualized_roi * 100:.1f}% a.a.) "
+            f"abaixo do CDI atual (~{cdi_annual * 100:.1f}% a.a.) — renda fixa "
+            f"rende mais sem o trabalho de leilão+reforma+revenda."
         )
 
     # PJ — destaque que é estimativa (mensagem específica por regime)

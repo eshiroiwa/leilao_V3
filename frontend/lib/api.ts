@@ -241,6 +241,11 @@ export type OpportunityResult = {
   expected_annualized_net_roi_pct?: number | null;
   /** P[ROI<0] aproximada: soma das probabilidades dos cenários deficitários. */
   prob_loss?: number | null;
+  /** CDI anualizado de referência (BACEN SGS série 12). Preenchido pelo
+   *  servidor; null no preview client-side. */
+  cdi_reference_annual_pct?: number | null;
+  /** Spread: ROI anualizado realista − CDI. Positivo = supera renda fixa. */
+  roi_vs_cdi_spread_pct?: number | null;
   max_bid_for_target: number | null;
   verdict: Verdict;
   /** Verdict APENAS pelo ROI realista (antes dos downgrades). */

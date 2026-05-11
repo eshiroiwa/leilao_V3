@@ -41,6 +41,7 @@ from app.agents.opportunity.verdict import (
     has_critical_warnings,
 )
 from app.core.logging import get_logger
+from app.services.bacen_service import BacenServiceError, get_bacen_service
 from app.services.supabase_service import SupabaseService
 
 logger = get_logger(__name__)
@@ -360,6 +361,16 @@ def run_analysis(
     if max_bid is not None:
         max_bid = round(max_bid, 2)
 
+    # --- 5b. Custo de oportunidade — CDI atual via BACEN SGS ----------
+    # Falha SILENCIOSA: se a API do BACEN cair, ficamos com None e o
+    # warning de "abaixo do CDI" simplesmente não é gerado (analysis
+    # mantém todo o resto do comportamento).
+    cdi_annual: float | None = None
+    try:
+        cdi_annual = get_bacen_service().get_cdi_annual()
+    except BacenServiceError as exc:
+        logger.warning("opportunity.cdi.fetch_failed", error=str(exc))
+
     # --- 6. Warnings + parecer ---------------------------------------
     warnings = build_warnings(
         occupancy_status=occupancy,
@@ -374,6 +385,8 @@ def run_analysis(
         renovation_cost=renovation_cost,
         renovation_area_source=_ren_area_source,
         pj_regime=inp.pj_regime,
+        realista_annualized_roi=realista.annualized_net_roi_pct,
+        cdi_annual=cdi_annual,
     )
 
     decision = classify_verdict(
@@ -419,6 +432,10 @@ def run_analysis(
         if sc.net_profit < 0
     )
 
+    roi_vs_cdi_spread: float | None = None
+    if cdi_annual is not None:
+        roi_vs_cdi_spread = round(realista.annualized_net_roi_pct - cdi_annual, 6)
+
     return AnalysisResult(
         input=inp,
         pessimista=pessimista,
@@ -427,6 +444,10 @@ def run_analysis(
         expected_net_roi_pct=round(expected_net_roi, 6),
         expected_annualized_net_roi_pct=round(expected_annualized, 6),
         prob_loss=round(prob_loss, 4),
+        cdi_reference_annual_pct=(
+            round(cdi_annual, 6) if cdi_annual is not None else None
+        ),
+        roi_vs_cdi_spread_pct=roi_vs_cdi_spread,
         max_bid_for_target=max_bid,
         verdict=decision.verdict,
         verdict_base=decision.base_verdict,

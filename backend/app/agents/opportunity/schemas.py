@@ -244,6 +244,30 @@ class AnalysisResult(BaseModel):
         ),
     )
 
+    # =================================================================
+    # Custo de oportunidade — referência BACEN SGS (CDI anualizado)
+    # =================================================================
+    # Para o investidor decidir se vale a pena prender capital no imóvel
+    # vs renda fixa. Campos opcionais — quando a API BACEN está fora do ar
+    # ou indisponível, ficam None e o verdict cai no comportamento prévio.
+    cdi_reference_annual_pct: float | None = Field(
+        default=None,
+        description=(
+            "CDI anualizado de referência (fração) consultado no BACEN SGS"
+            " (série 12, convenção 252 dias úteis). Snapshotado na hora"
+            " da análise para auditoria."
+        ),
+    )
+    roi_vs_cdi_spread_pct: float | None = Field(
+        default=None,
+        description=(
+            "Spread do ROI anualizado realista vs CDI:"
+            " expected_annualized_net_roi - cdi_reference_annual_pct."
+            " Positivo = supera renda fixa; negativo = aceitar leilão"
+            " com retorno abaixo do CDI exige justificativa."
+        ),
+    )
+
     # Lance máximo p/ atingir o ROI alvo (calculado sobre o cenário REALISTA)
     max_bid_for_target: float | None = Field(
         default=None,

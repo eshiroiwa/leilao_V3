@@ -82,6 +82,56 @@ def test_run_analysis_exposes_expected_metrics_and_prob_loss() -> None:
     assert 0.0 <= result.prob_loss <= 0.30
 
 
+def test_run_analysis_exposes_cdi_reference_and_spread() -> None:
+    """Com stub do BACEN, o resultado deve expor cdi_reference e o spread."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(),
+        valuation=_valuation(),
+    )
+    assert result.cdi_reference_annual_pct == pytest.approx(0.144)
+    # Spread = annualized realista − 0.144 (positivo: imóvel bate CDI)
+    expected_spread = result.realista.annualized_net_roi_pct - 0.144
+    assert result.roi_vs_cdi_spread_pct == pytest.approx(expected_spread, abs=1e-6)
+
+
+def test_run_analysis_warns_when_roi_below_cdi() -> None:
+    """ROI anualizado < CDI deve gerar warning explicativo."""
+    # Lance alto + holding longo → ROI anualizado < 14,4% (stub do CDI).
+    inp = AnalysisInput(
+        bid_amount=380_000, target_net_roi_pct=0.40, holding_months=36,
+    )
+    result = run_analysis(
+        inp=inp, property_row=_property_row(), valuation=_valuation(),
+    )
+    assert result.realista.annualized_net_roi_pct < 0.144
+    assert any("CDI" in w for w in result.warnings), result.warnings
+
+
+def test_run_analysis_no_cdi_warning_when_bacen_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Se o BACEN cair, o resultado fica com cdi=None e SEM warning de CDI —
+    o pipeline degrada graciosamente."""
+    from app.services import bacen_service as bs
+
+    def _boom(self: bs.BacenService) -> float:
+        raise bs.BacenServiceError("simulated outage")
+
+    monkeypatch.setattr(bs.BacenService, "get_cdi_annual", _boom)
+    bs.get_bacen_service.cache_clear()
+
+    result = run_analysis(
+        inp=AnalysisInput(bid_amount=200_000),
+        property_row=_property_row(),
+        valuation=_valuation(),
+    )
+    assert result.cdi_reference_annual_pct is None
+    assert result.roi_vs_cdi_spread_pct is None
+    assert not any("CDI" in w for w in result.warnings)
+
+
 def test_run_analysis_prob_loss_caps_at_one_when_all_negative() -> None:
     """Lance proibitivamente alto → todos os cenários com prejuízo → prob_loss = 1."""
     inp = AnalysisInput(
