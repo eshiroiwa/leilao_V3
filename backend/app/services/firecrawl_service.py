@@ -32,7 +32,7 @@ class FirecrawlService:
         *,
         only_main_content: bool = True,
         wait_for_ms: int = 1500,
-        timeout_ms: int = 30_000,
+        timeout_ms: int = 20_000,
     ) -> dict[str, Any]:
         """Raspa a URL e retorna ``{"markdown": ..., "metadata": ..., "html": ...}``.
 

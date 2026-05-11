@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -294,9 +295,18 @@ def node_fetch_candidates(state: ComparablesState) -> dict[str, Any]:
     for url, row in cached.items():
         scraped.append({"source_url": url, "from_cache": True, "cached_row": row})
 
-    # Scrapes em paralelo (Firecrawl é I/O-bound: cada call leva 5-7s).
-    # Threads bastam — não precisamos de asyncio aqui.
+    # Scrapes em paralelo (Firecrawl é I/O-bound: cada call leva 5-7s no caso
+    # bom, mas pode chegar a 2 min em portais lentos como ImovelWeb). Threads
+    # bastam — não precisamos de asyncio aqui.
+    #
+    # Wall-clock timeout do batch: se um scrape ficar muito lento, abandonamos
+    # ele e seguimos o pipeline com o que já conseguimos. Sem isso, UM scrape
+    # ruim trava 2 min antes de retry/expand. O scrape em si tem
+    # ``timeout_ms=20s`` no service; ``per_scrape_cap`` é o teto wall-clock
+    # incluindo overhead de fila/rede; ``batch_cap`` é o teto agregado.
     calls_used = 0
+    n_skipped_deadline = 0
+    n_skipped_error = 0
 
     def _scrape_one(url: str) -> dict[str, Any] | None:
         try:
@@ -312,14 +322,54 @@ def node_fetch_candidates(state: ComparablesState) -> dict[str, Any]:
         }
 
     if fresh:
-        max_workers = min(len(fresh), 4)  # 4 scrapes em paralelo é seguro
+        # Mais workers => menos chance de scrapes lentos serializarem; até 8
+        # é seguro pro Firecrawl. Ajuda em buscas largas que retornam muitos
+        # candidatos.
+        max_workers = min(len(fresh), 8)
+
+        # Cap global do batch (scrapes paralelos): 60s. Em produção, scrapes
+        # bons levam 5–10s; 60s é mais que generoso pra absorver rede ruim
+        # mas curto o bastante pra não dominar o tempo da avaliação.
+        batch_cap_s = float(getattr(settings, "cma_fetch_batch_timeout_s", 60))
+        deadline = time.monotonic() + batch_cap_s
+
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(_scrape_one, u): u for u in fresh}
-            for fut in as_completed(futures):
-                result = fut.result()
-                if result is not None:
-                    scraped.append(result)
-                    calls_used += 1
+            try:
+                for fut in as_completed(futures, timeout=batch_cap_s):
+                    try:
+                        result = fut.result(timeout=max(0.0, deadline - time.monotonic()))
+                    except FuturesTimeoutError:
+                        n_skipped_deadline += 1
+                        continue
+                    except Exception as exc:  # defesa: scrape_one já trata FirecrawlScrapeError
+                        logger.warning(
+                            "cma.fetch.skip.error", url=futures[fut], error=str(exc)
+                        )
+                        n_skipped_error += 1
+                        continue
+                    if result is not None:
+                        scraped.append(result)
+                        calls_used += 1
+            except FuturesTimeoutError:
+                # Batch atingiu o teto wall-clock; conta os pendentes como
+                # abandonados. As threads continuam rodando até o Firecrawl
+                # responder, mas o pipeline avança sem esperar.
+                pendentes = [
+                    futures[f] for f in futures if not f.done()
+                ]
+                n_skipped_deadline += len(pendentes)
+                for url in pendentes:
+                    logger.warning(
+                        "cma.fetch.skip.deadline",
+                        url=url,
+                        cap_s=batch_cap_s,
+                    )
+                # Cancela o que ainda não começou; o que começou continua
+                # rodando em background mas não trava o pipeline.
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
 
     out: dict[str, Any] = {"scraped_listings": scraped}
     out.update(_budget_inc(state, firecrawl=calls_used))
@@ -328,6 +378,8 @@ def node_fetch_candidates(state: ComparablesState) -> dict[str, Any]:
         n_total=len(scraped),
         n_cached=len(cached),
         n_fresh=calls_used,
+        n_skipped_deadline=n_skipped_deadline or None,
+        n_skipped_error=n_skipped_error or None,
     )
     return out
 
@@ -1138,6 +1190,7 @@ def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
                 ppm2=price / area,
                 weight=float(s["weight"]),
                 same_building=bool(s.get("_same_condo")),
+                area_m2=area,
             )
         )
 
@@ -1202,6 +1255,38 @@ def node_estimate_price(state: ComparablesState) -> dict[str, Any]:
             confidence=val.confidence,
             target_condo=target_condo or None,
         )
+
+    # ------------------------------------------------------------------ #
+    # Sanity check vs FipeZAP (city_ppm2_stats). Quando a tabela existe e
+    # tem leitura para a cidade do target, compara o ppm2_estimated da CMA
+    # com a média do FipeZAP. Divergência > 30% rebaixa a confidence em 1
+    # nível e gera warning. Falhas silenciosas: tabela vazia / fora do ar
+    # → comportamento inalterado.
+    # ------------------------------------------------------------------ #
+    from app.agents.comparables.sanity import compare_with_fipezap
+
+    target_city = (target.get("city") or "").strip()
+    target_state = (target.get("state") or "").strip().upper() or None
+    if target_city:
+        try:
+            city_row = get_supabase_service().get_latest_city_ppm2(
+                city=target_city, state=target_state
+            )
+        except Exception:  # qualquer falha no supabase = sem sanity check
+            city_row = None
+        sanity = compare_with_fipezap(val, city_row)
+        if sanity.divergence_pct is not None:
+            logger.info(
+                "cma.fipezap.compared",
+                cma_ppm2=val.ppm2_estimated,
+                fipezap_ppm2=sanity.fipezap_ppm2,
+                divergence_pct=sanity.divergence_pct,
+                confidence_before=val.confidence,
+                confidence_after=sanity.valuation.confidence,
+            )
+        if sanity.warning:
+            extra_warnings.append(sanity.warning)
+        val = sanity.valuation
 
     # Cap de comparáveis salvos no join (mantém top-N por peso).
     sorted_used = sorted(used, key=lambda s: s["weight"], reverse=True)

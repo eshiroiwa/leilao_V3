@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     cma_max_firecrawl_scrapes: int = Field(default=4)
     # 1 LLM por scrape (batch). Manter alinhado com scrapes.
     cma_max_llm_calls: int = Field(default=4)
+    # Wall-clock total (segundos) para o batch de scrapes do
+    # ``node_fetch_candidates``. Acima disso, scrapes pendentes são
+    # abandonados e o pipeline avança com o que conseguiu. Sem esse cap,
+    # UM scrape lento (ImovelWeb costuma demorar 1-2 min) trava todo o
+    # request mesmo com paralelismo de 8.
+    cma_fetch_batch_timeout_s: int = Field(default=60)
     # Cache.
     cma_listing_cache_days: int = Field(default=30)
     cma_neighborhood_ppm2_cache_days: int = Field(default=7)
