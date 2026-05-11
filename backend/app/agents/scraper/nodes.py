@@ -311,30 +311,56 @@ def node_geocode(state: ScraperState) -> dict[str, Any]:
         }
 
     attempt = _try_geocode(postal_query)
-    if attempt is None:
+    if attempt is not None:
+        gres, (lat, lng) = attempt
+        return {
+            "geocode_result": gres,
+            "latitude": lat,
+            "longitude": lng,
+            "google_place_id": gres.get("place_id"),
+            # Sempre POSTAL_CODE quando viemos do fallback, independente do
+            # location_type que o Google retornar para o CEP.
+            "geocoding_confidence": "POSTAL_CODE",
+            "warnings": _append(
+                state,
+                "warnings",
+                f"geocode: usando fallback por CEP ({postal_query}); confidence=POSTAL_CODE",
+            ),
+        }
+
+    # ------------------------------------------------------------------ #
+    # CAMINHO C — último recurso: BrasilAPI / ViaCEP.
+    # Quando Google falha em A e B, ainda dá pra ancorar o imóvel a uma
+    # cidade/UF via consulta gratuita do CEP. BrasilAPI v2 às vezes traz
+    # coordenadas via OpenStreetMap; ViaCEP é fallback só com endereço.
+    # Confidence rebaixada para POSTAL_CODE (idem caminho B).
+    # ------------------------------------------------------------------ #
+    from app.services.brasilapi_service import get_brasilapi_service
+
+    cep_data = get_brasilapi_service().fetch_cep(extracted.address.postal_code or "")
+    if cep_data is None:
         return {
             "warnings": _append(
                 state,
                 "warnings",
-                f"geocode: fallback por CEP falhou ({postal_query}) — location ficará nulo.",
+                f"geocode: fallback por CEP falhou ({postal_query}) e "
+                "BrasilAPI/ViaCEP também — location ficará nulo.",
             ),
         }
 
-    gres, (lat, lng) = attempt
-    return {
-        "geocode_result": gres,
-        "latitude": lat,
-        "longitude": lng,
-        "google_place_id": gres.get("place_id"),
-        # Sempre POSTAL_CODE quando viemos do fallback, independente do
-        # location_type que o Google retornar para o CEP.
-        "geocoding_confidence": "POSTAL_CODE",
+    update: dict[str, Any] = {
         "warnings": _append(
             state,
             "warnings",
-            f"geocode: usando fallback por CEP ({postal_query}); confidence=POSTAL_CODE",
+            f"geocode: usando BrasilAPI/ViaCEP ({cep_data['source']}) — "
+            "confidence=POSTAL_CODE",
         ),
+        "geocoding_confidence": "POSTAL_CODE",
     }
+    if cep_data.get("lat") is not None and cep_data.get("lng") is not None:
+        update["latitude"] = cep_data["lat"]
+        update["longitude"] = cep_data["lng"]
+    return update
 
 
 # --------------------------------------------------------------------------- #
