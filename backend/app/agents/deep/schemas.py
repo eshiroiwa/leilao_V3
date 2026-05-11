@@ -121,7 +121,9 @@ class PriorAuctionResult(BaseModel):
 ConservationLevel = Literal["novo", "bom", "regular", "mau", "ruina"]
 """Estado físico do imóvel inferido pelo Vision LLM sobre a foto do edital."""
 
-SuggestedRenovationLevel = Literal["none", "basic", "moderate", "full", "premium"]
+SuggestedRenovationLevel = Literal[
+    "none", "cosmetic", "light", "basic", "moderate", "full", "premium"
+]
 """Sugestão de nível de reforma — espelha ``opportunity.RenovationLevel``."""
 
 

@@ -54,8 +54,13 @@ class AnalysisInput(BaseModel):
         ),
     )
     renovation_level: RenovationLevel = Field(
-        default="moderate",
-        description="Nível da reforma planejada (none/basic/moderate/full/premium).",
+        default="basic",
+        description=(
+            "Nível da reforma planejada — em ordem crescente de custo:"
+            " none / cosmetic (R$150/m²) / light (R$300/m²) /"
+            " basic (R$500/m², default) / moderate (R$1.000/m²) /"
+            " full (R$1.500/m²) / premium (R$2.500/m²)."
+        ),
     )
     bid_amount: Annotated[float, Field(ge=0)] = Field(
         ...,

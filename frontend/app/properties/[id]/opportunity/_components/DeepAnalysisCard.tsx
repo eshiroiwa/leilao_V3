@@ -425,6 +425,8 @@ const RENO_SUGGESTION_LABEL: Record<
   string
 > = {
   none: "Nenhuma",
+  cosmetic: "Cosmética",
+  light: "Leve",
   basic: "Básica",
   moderate: "Moderada",
   full: "Completa",

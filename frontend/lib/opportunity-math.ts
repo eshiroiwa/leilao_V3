@@ -86,6 +86,8 @@ function pfIncomeTaxProgressive(grossProfit: number): number {
 
 const RENOVATION_PER_M2: Record<RenovationLevel, number> = {
   none: 0,
+  cosmetic: 150,
+  light: 300,
   basic: 500,
   moderate: 1_000,
   full: 1_500,

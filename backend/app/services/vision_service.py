@@ -31,7 +31,9 @@ from app.core.logging import get_logger
 # importa esse service ao montar o pipeline).
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 ConservationLevel = Literal["novo", "bom", "regular", "mau", "ruina"]
-SuggestedRenovationLevel = Literal["none", "basic", "moderate", "full", "premium"]
+SuggestedRenovationLevel = Literal[
+    "none", "cosmetic", "light", "basic", "moderate", "full", "premium"
+]
 
 logger = get_logger(__name__)
 
@@ -57,9 +59,15 @@ class VisionPayload(BaseModel):
     suggested_renovation_level: SuggestedRenovationLevel | None = Field(
         default=None,
         description=(
-            "Sugestão de nível de reforma compatível com o estado observado:"
-            " 'none' / 'basic' (pintura/reparos) / 'moderate' (acabamentos)"
-            " / 'full' (reforma estrutural) / 'premium' (alto padrão)."
+            "Sugestão de nível de reforma compatível com o estado observado,"
+            " em ordem crescente de custo:"
+            " 'none' (nenhuma)"
+            " / 'cosmetic' (R$150/m² — só pintura/limpeza)"
+            " / 'light' (R$300/m² — pintura + pequenos reparos)"
+            " / 'basic' (R$500/m² — reparos extensos + pequenos acabamentos)"
+            " / 'moderate' (R$1.000/m² — acabamentos novos, elétrica/hidráulica parcial)"
+            " / 'full' (R$1.500/m² — reforma estrutural completa)"
+            " / 'premium' (R$2.500/m² — alto padrão, materiais top)."
         ),
     )
     risk_flags: list[str] = Field(

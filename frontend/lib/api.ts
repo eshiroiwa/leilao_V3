@@ -153,6 +153,8 @@ export type BuyerType = "PF" | "PJ";
 
 export type RenovationLevel =
   | "none"
+  | "cosmetic"
+  | "light"
   | "basic"
   | "moderate"
   | "full"
@@ -279,7 +281,7 @@ export type DeepConfidence = "HIGH" | "MEDIUM" | "LOW";
 /** Saída do nó CONDITION ASSESSMENT (Vision LLM sobre foto do edital). */
 export type ConditionAssessment = {
   conservation_level: "novo" | "bom" | "regular" | "mau" | "ruina" | null;
-  suggested_renovation_level: "none" | "basic" | "moderate" | "full" | "premium" | null;
+  suggested_renovation_level: RenovationLevel | null;
   risk_flags: string[];
   image_url: string | null;
   notes: string | null;

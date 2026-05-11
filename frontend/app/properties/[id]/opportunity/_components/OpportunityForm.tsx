@@ -19,6 +19,8 @@ import { formatBRL, formatPct } from "@/lib/utils";
 
 const RENOVATION_OPTIONS: { value: RenovationLevel; label: string }[] = [
   { value: "none", label: "Nenhuma" },
+  { value: "cosmetic", label: "Cosmética (R$ 150/m²)" },
+  { value: "light", label: "Leve (R$ 300/m²)" },
   { value: "basic", label: "Básica (R$ 500/m²)" },
   { value: "moderate", label: "Moderada (R$ 1.000/m²)" },
   { value: "full", label: "Completa (R$ 1.500/m²)" },

@@ -22,7 +22,9 @@ from typing import Final, Literal
 # =============================================================================
 BuyerType = Literal["PF", "PJ"]
 PJRegime = Literal["presumido", "real"]
-RenovationLevel = Literal["none", "basic", "moderate", "full", "premium"]
+RenovationLevel = Literal[
+    "none", "cosmetic", "light", "basic", "moderate", "full", "premium"
+]
 OccupancyKey = Literal["vacant", "occupied", "unknown"]
 VerdictType = Literal[
     "BOA_OPORTUNIDADE",
@@ -177,11 +179,13 @@ def pf_income_tax_progressive(
 # 4. Reforma — R$/m²
 # =============================================================================
 RENOVATION_PER_M2: Final[dict[RenovationLevel, float]] = {
-    "none": 0.0,
-    "basic": 500.0,      # pintura, pequenos reparos
-    "moderate": 1_000.0, # acabamentos novos, elétrica/hidráulica parcial
-    "full": 1_500.0,     # reforma estrutural completa, sem mudar planta
-    "premium": 2_500.0,  # alto padrão, materiais top de linha
+    "none":     0.0,
+    "cosmetic": 150.0,    # só pintura/limpeza, sem trocar pisos/louças
+    "light":    300.0,    # pintura + pequenos reparos pontuais
+    "basic":    500.0,    # pintura, reparos extensos, pequenos acabamentos
+    "moderate": 1_000.0,  # acabamentos novos, elétrica/hidráulica parcial
+    "full":     1_500.0,  # reforma estrutural completa, sem mudar planta
+    "premium":  2_500.0,  # alto padrão, materiais top de linha
 }
 
 

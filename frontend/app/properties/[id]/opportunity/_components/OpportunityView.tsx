@@ -69,7 +69,7 @@ export function OpportunityView({
     () => ({
       buyer_type: "PF",
       target_net_roi_pct: DEFAULT_TARGET_NET_ROI,
-      renovation_level: "moderate",
+      renovation_level: "basic",
       bid_amount: property.minimum_bid_first ?? 0,
       other_costs: otherCostsDefaultFor(property.occupancy_status),
       iptu_arrears: property.iptu_arrears ?? 0,
