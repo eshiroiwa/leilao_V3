@@ -268,6 +268,33 @@ class AnalysisResult(BaseModel):
         ),
     )
 
+    # =================================================================
+    # Monte Carlo — 10k simulações amostrando preço, reforma e ocupação
+    # =================================================================
+    monte_carlo_n: int | None = Field(
+        default=None,
+        description="Tamanho da amostra Monte Carlo. None quando não foi executado.",
+    )
+    monte_carlo_var_5_net_roi: float | None = Field(
+        default=None,
+        description=(
+            "5º percentil do ROI líquido na simulação Monte Carlo "
+            "(Value-at-Risk a 5%). Mostra a cauda esquerda — quão ruim "
+            "pode ficar o pior 5% dos cenários simulados."
+        ),
+    )
+    monte_carlo_p95_net_roi: float | None = Field(
+        default=None,
+        description="95º percentil do ROI líquido Monte Carlo (cauda direita).",
+    )
+    monte_carlo_p_below_cdi: float | None = Field(
+        default=None,
+        description=(
+            "P[ROI anualizado < CDI] estimada pela simulação. Requer que"
+            " o CDI esteja disponível; senão fica None."
+        ),
+    )
+
     # Lance máximo p/ atingir o ROI alvo (calculado sobre o cenário REALISTA)
     max_bid_for_target: float | None = Field(
         default=None,

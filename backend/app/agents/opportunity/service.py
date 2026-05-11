@@ -22,6 +22,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.agents.opportunity import assumptions as A
+from app.agents.opportunity.montecarlo import (
+    DEFAULT_N_SIMULATIONS,
+    MonteCarloInputs,
+    simulate as monte_carlo_simulate,
+)
 from app.agents.opportunity.pricing_math import (
     MaxBidParams,
     compute_acquisition_costs,
@@ -436,6 +441,70 @@ def run_analysis(
     if cdi_annual is not None:
         roi_vs_cdi_spread = round(realista.annualized_net_roi_pct - cdi_annual, 6)
 
+    # --- 9. Monte Carlo (substitui métricas heurísticas se valuation real) ---
+    # Só rodamos quando a banda P10/P50/P90 vem de uma CMA legítima — pular
+    # quando estamos no caminho de proxy (bid × 1.2) evita simular ruído.
+    mc_n: int | None = None
+    mc_var_5: float | None = None
+    mc_p95: float | None = None
+    mc_p_below_cdi: float | None = None
+    if valuation and pess_p < real_p < oti_p:
+        try:
+            mc_inputs = MonteCarloInputs(
+                sale_price_p10=pess_p,
+                sale_price_p50=real_p,
+                sale_price_p90=oti_p,
+                bid=inp.bid_amount,
+                auctioneer_fee_pct=auctioneer_fee_pct,
+                itbi_pct=itbi_pct,
+                registration_pct=registration_pct,
+                iptu_arrears=iptu_arrears,
+                condo_arrears=condo_arrears,
+                other_costs=other_costs,
+                monthly_iptu=float(inp.monthly_iptu),
+                monthly_condo=float(inp.monthly_condo),
+                holding_months=inp.holding_months,
+                renovation_cost_baseline=renovation_cost,
+                prob_occupied=(
+                    1.0
+                    if (occupancy or "").lower() == "ocupado"
+                    else 0.5
+                    if (occupancy or "").lower() in {"", "desconhecido", "unknown"}
+                    else 0.0
+                ),
+                occupied_cost_extra=(
+                    A.OTHER_COSTS_DEFAULT["occupied"] - A.OTHER_COSTS_DEFAULT["vacant"]
+                ),
+                realtor_fee_pct=A.REALTOR_FEE_PCT,
+                buyer_type=inp.buyer_type,
+                pf_brackets=A.IR_PF_BRACKETS,
+                pj_rate=A.IR_PJ_PCT,
+                pj_regime=inp.pj_regime,
+                pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
+                pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
+            )
+            # Seed determinístico baseado no bid+sale_price para evitar
+            # variação espúria entre re-execuções da mesma análise.
+            mc_seed = int(abs(hash((round(inp.bid_amount, 2), round(real_p, 2)))) % (2**31))
+            mc_out = monte_carlo_simulate(
+                mc_inputs,
+                n_simulations=DEFAULT_N_SIMULATIONS,
+                cdi_annual=cdi_annual,
+                seed=mc_seed,
+            )
+            mc_n = mc_out.n_simulations
+            mc_var_5 = round(mc_out.var_5_net_roi, 6)
+            mc_p95 = round(mc_out.p95_net_roi, 6)
+            if mc_out.p_below_cdi is not None:
+                mc_p_below_cdi = round(mc_out.p_below_cdi, 4)
+            # Substitui as métricas heurísticas pela média amostral
+            # (mais defensável estatisticamente — captura cauda assimétrica).
+            expected_net_roi = mc_out.e_net_roi
+            expected_annualized = mc_out.e_annualized_net_roi
+            prob_loss = mc_out.p_loss
+        except Exception as exc:  # nunca derrubar o pipeline por causa do MC
+            logger.warning("opportunity.montecarlo.failed", error=str(exc))
+
     return AnalysisResult(
         input=inp,
         pessimista=pessimista,
@@ -448,6 +517,10 @@ def run_analysis(
             round(cdi_annual, 6) if cdi_annual is not None else None
         ),
         roi_vs_cdi_spread_pct=roi_vs_cdi_spread,
+        monte_carlo_n=mc_n,
+        monte_carlo_var_5_net_roi=mc_var_5,
+        monte_carlo_p95_net_roi=mc_p95,
+        monte_carlo_p_below_cdi=mc_p_below_cdi,
         max_bid_for_target=max_bid,
         verdict=decision.verdict,
         verdict_base=decision.base_verdict,

@@ -246,6 +246,14 @@ export type OpportunityResult = {
   cdi_reference_annual_pct?: number | null;
   /** Spread: ROI anualizado realista − CDI. Positivo = supera renda fixa. */
   roi_vs_cdi_spread_pct?: number | null;
+  /** Número de simulações Monte Carlo executadas (default 10k). */
+  monte_carlo_n?: number | null;
+  /** 5º percentil do ROI líquido na simulação (cauda esquerda — VaR 5%). */
+  monte_carlo_var_5_net_roi?: number | null;
+  /** 95º percentil do ROI líquido na simulação (cauda direita). */
+  monte_carlo_p95_net_roi?: number | null;
+  /** P[ROI anualizado < CDI] amostral. None quando CDI não disponível. */
+  monte_carlo_p_below_cdi?: number | null;
   max_bid_for_target: number | null;
   verdict: Verdict;
   /** Verdict APENAS pelo ROI realista (antes dos downgrades). */
