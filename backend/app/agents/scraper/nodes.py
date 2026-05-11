@@ -11,6 +11,7 @@ Erros fatais levantam exceção, e o roteamento decide se aborta.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -40,6 +41,22 @@ def _append(state: ScraperState, key: str, value: str) -> list[str]:
     bucket = list(state.get(key, []) or [])
     bucket.append(value)
     return bucket
+
+
+def _normalize_cpf_cnpj(raw: str | None) -> str | None:
+    """Normaliza CPF/CNPJ extraído pelo LLM: deixa só dígitos, aceita 11 ou 14.
+
+    Mesmo quando o prompt instrui ``"apenas dígitos"``, o LLM ocasionalmente
+    devolve com pontuação. Normalizamos aqui — defesa em profundidade —
+    porque o índice em ``owner_cpf_cnpj`` espera valores limpos para
+    permitir queries por CPF/CNPJ em batch (Agente Legal futuro).
+
+    Devolve None quando o tamanho não bate 11 (CPF) nem 14 (CNPJ).
+    """
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", raw)
+    return digits if len(digits) in (11, 14) else None
 
 
 def _ewkt_point(lng: float, lat: float) -> str:
@@ -435,6 +452,13 @@ def node_persist(state: ScraperState) -> dict[str, Any]:
             {"summary": extracted.encumbrances_summary}
             if extracted.encumbrances_summary
             else None
+        ),
+        # identificadores registrais — alimentam Agente Legal (CNJ/ONR)
+        "owner_cpf_cnpj": _normalize_cpf_cnpj(extracted.owner_cpf_cnpj),
+        "matricula": (extracted.registry_matricula or "").strip() or None,
+        "registry_office": (extracted.registry_office or "").strip() or None,
+        "inscricao_municipal": (
+            (extracted.inscricao_municipal or "").strip() or None
         ),
         # auditoria
         "raw_markdown": state.get("raw_markdown"),

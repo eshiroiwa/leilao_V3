@@ -182,7 +182,40 @@ Regras OBRIGATÓRIAS:
         first_auction_at    = "2026-05-12T10:52:00-03:00"
         second_auction_at   = null
 
-15. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
+15. IDENTIFICADORES JURÍDICOS / REGISTRAIS (alimentam consultas futuras):
+
+    15.1 owner_cpf_cnpj (CPF/CNPJ do proprietário/executado):
+         - Procure por: "CPF:", "CNPJ:", "Executado:", "Devedor fiduciante:",
+           "Proprietário:", "Devedor:". Em editais judiciais o executado
+           costuma ser o proprietário do imóvel penhorado.
+         - Devolva APENAS OS DÍGITOS, sem pontos/hífens/barras.
+           Ex.: "123.456.789-00" → "12345678900";
+                "12.345.678/0001-90" → "12345678000190".
+         - Quando há múltiplos executados, devolva o PRIMEIRO listado.
+         - Se o edital cita só o NOME (sem CPF/CNPJ visível), null.
+
+    15.2 registry_matricula (matrícula no Cartório de Registro de Imóveis):
+         - Rótulos: "matrícula nº", "matrícula número", "sob matrícula",
+           "matriculado sob o número", "matrícula".
+         - Geralmente acompanhada de "CRI da Xª Comarca" ou
+           "[X]º Cartório de Registro de Imóveis".
+         - Devolva apenas o NÚMERO (sem o rótulo). Pode ter hífen ou
+           pontos (ex.: "12.345", "67890-2"). Null se não declarada.
+
+    15.3 registry_office (Cartório):
+         - Nome ou identificador do CRI. Ex.: "1º Oficial de Registro
+           de Imóveis de São Paulo", "2ª CRI de Campinas".
+         - Texto livre, NÃO normalize.
+         - Null quando não declarado.
+
+    15.4 inscricao_municipal (inscrição IPTU):
+         - Em São Paulo: "SQL" (Setor/Quadra/Lote) ou "Cadastro do
+           Contribuinte". Em outros municípios: "inscrição imobiliária",
+           "cadastro municipal", "Inscrição:".
+         - Devolva como aparece no edital (string), sem normalizar.
+         - Null se não declarada.
+
+16. image_url (URL da PRIMEIRA fotografia do imóvel — usada como thumbnail):
     - Imagens no markdown aparecem no formato `![alt](url)` ou em tags HTML
       `<img src="url">`. Pegue a URL da primeira que SEJA uma fotografia
       do IMÓVEL (não do leiloeiro).

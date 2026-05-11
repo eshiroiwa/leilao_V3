@@ -197,3 +197,50 @@ class ExtractedAuctionData(BaseModel):
             "fração. Se nada for dito, devolva null para usarmos o default."
         ),
     )
+
+    # ---- Identificadores que habilitam consultas jurídicas/registrais ----
+    # Esses campos alimentam o Agente Legal (futura Fase 3) — DataJud
+    # consulta por CPF/CNPJ do proprietário; ONR consulta por matrícula.
+    # Extraí-los aqui é o gatilho para essas integrações.
+    owner_cpf_cnpj: str | None = Field(
+        None,
+        description=(
+            "CPF (11 dígitos) ou CNPJ (14 dígitos) do PROPRIETÁRIO/executado "
+            "mencionado no edital. Procure por trechos: 'CPF: XXX.XXX.XXX-XX', "
+            "'CNPJ: XX.XXX.XXX/0001-XX', 'Executado:', 'Devedor fiduciante:', "
+            "'Proprietário:'. Devolva APENAS os dígitos (sem pontos, hífens "
+            "ou barras). Quando há múltiplos executados, devolva o PRIMEIRO. "
+            "Quando o edital cita só o nome sem documento, devolva null."
+        ),
+    )
+    registry_matricula: str | None = Field(
+        None,
+        description=(
+            "Número da MATRÍCULA do imóvel no Cartório de Registro de Imóveis. "
+            "Rótulos típicos: 'matrícula nº', 'matrícula número', 'sob matrícula'. "
+            "Procure no bloco de identificação do imóvel, geralmente "
+            "acompanhado de 'CRI da Xª Comarca de [Cidade]' ou '[X]º "
+            "Cartório de Registro de Imóveis'. Devolva apenas o NÚMERO "
+            "(ex.: '12345', '12.345-2'). Quando não declarada, null."
+        ),
+    )
+    registry_office: str | None = Field(
+        None,
+        description=(
+            "Nome ou identificador do Cartório de Registro de Imóveis onde "
+            "a matrícula está. Ex.: '1º Oficial de Registro de Imóveis de "
+            "São Paulo', '2ª CRI de Campinas'. Texto livre, sem normalização. "
+            "Null quando não declarado."
+        ),
+    )
+    inscricao_municipal: str | None = Field(
+        None,
+        description=(
+            "Inscrição municipal (cadastro de IPTU) do imóvel. Em SP é o "
+            "'Setor/Quadra/Lote' ou 'SQL'; em outros municípios pode ser "
+            "'cadastro do contribuinte' ou 'inscrição imobiliária'. Devolva "
+            "como string conforme aparece no edital, sem normalizar. Habilita "
+            "consulta a portais municipais (ex.: GeoSampa) para valor venal. "
+            "Quando não declarada, null."
+        ),
+    )
