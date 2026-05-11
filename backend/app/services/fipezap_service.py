@@ -58,20 +58,43 @@ def _normalize_city(name: str) -> str:
     return " ".join(no_accents.lower().split())
 
 
-# Regex que casa linhas tipo:
-#   "Vitória (ES) ... R$ 14.253"
-#   "São Paulo (SP) ... R$ 11.915"
-# Tolerante a separadores variados ("|", tabulação, sequência de espaços) e
-# diferentes posições do (UF). Aceita também o padrão "ranking pos. Cidade".
-_PRICE_LINE = re.compile(
+# Estratégia 1 — TABELA markdown (mais confiável). O PDF da FipeZAP tem
+# uma tabela "Comportamento recente dos preços" no formato:
+#
+#   | São Paulo | SP | +0,19% | +0,42% | +1,02% | +4,28% | 12.019 |
+#
+# Última coluna é o preço médio em R$/m² (sem prefixo "R$"). Cidade na 1ª
+# célula, UF na 2ª, depois variações percentuais, preço na última.
+_TABLE_ROW = re.compile(
     r"""
-    (?P<city>[A-ZÀ-Ÿ][\w'\-\sÀ-ÿ]{2,40}?)        # cidade (com acentos, espaços, hífen)
-    \s*\(\s*(?P<state>[A-Z]{2})\s*\)             # (UF)
-    [^\d\n]{0,80}?                               # qualquer separador (até 80 chars sem dígito)
-    R\$\s*(?P<value>\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?)   # valor R$
-    \s*(?:/m|\s|$)                               # opcionalmente "/m²" ou fim
+    ^\|\s*
+    (?P<city>[A-ZÀ-Ÿ][\w'\-\sÀ-ÿ]{2,40}?)        # cidade
+    \s*\|\s*
+    (?P<state>[A-Z]{2})                          # UF
+    \s*\|
+    (?:[^|]*\|){3,5}                              # 3-5 colunas de variação %
+    \s*(?P<value>\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?) # valor da última coluna
+    \s*\|?\s*$
     """,
     re.VERBOSE | re.MULTILINE,
+)
+
+# Estratégia 2 — fallback no parágrafo do "ranking" textual. Útil quando
+# a tabela está corrompida no markdown:
+#   "Vitória (ES) ... maior preço médio no mês (R$ 14.818/m²),
+#    seguida por: Florianópolis (R$ 13.208/m²); São Paulo (R$ 12.019/m²); ..."
+# Aqui só a PRIMEIRA cidade tem (UF) explícito — extraímos a sequência
+# casando "Cidade (R$ X/m²)" e mantendo o estado="" para reconciliação
+# posterior contra a tabela.
+_RANK_ENTRY = re.compile(
+    r"""
+    (?:^|[;:,])\s*                                # delimitador ou início
+    (?P<city>[A-ZÀ-Ÿ][\w'\-\sÀ-ÿ]{2,40}?)        # cidade
+    \s*\(\s*R\$\s*
+    (?P<value>\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?)
+    \s*/m
+    """,
+    re.VERBOSE,
 )
 
 
@@ -90,13 +113,20 @@ class FipeZapService:
     def fetch_pdf_markdown(self, year: int, month: int) -> str:
         """Baixa o PDF mensal via Firecrawl e devolve o markdown extraído.
 
+        PDFs do FipeZAP costumam ser densos (~50KB de markdown) e meses
+        mais antigos podem demorar bem mais do que o default de scrape;
+        usamos timeout generoso (60s) e wait extra para o servidor da
+        Fipe renderizar.
+
         Levanta :class:`FipeZapServiceError` se o Firecrawl falhar ou se a
         URL não estiver disponível (ex.: mês muito recente / muito antigo).
         """
         url = f"{_BASE_URL}/fipezap-{year:04d}{month:02d}-residencial-venda.pdf"
         logger.info("fipezap.fetch.start", url=url, year=year, month=month)
         try:
-            doc = get_firecrawl_service().scrape_to_markdown(url)
+            doc = get_firecrawl_service().scrape_to_markdown(
+                url, timeout_ms=60_000, wait_for_ms=3_000,
+            )
         except FirecrawlScrapeError as exc:
             raise FipeZapServiceError(
                 f"Firecrawl não conseguiu ler FipeZAP {year:04d}-{month:02d}: {exc}"
@@ -112,29 +142,68 @@ class FipeZapService:
     ) -> list[CityPpm2Reading]:
         """Extrai preços médios R$/m² por cidade do markdown FipeZAP.
 
-        Deduplica por cidade (algumas linhas aparecem em mais de uma seção:
-        ranking absoluto, ranking de variação, etc.) — fica com o maior
-        valor encontrado, que costuma ser o R$/m² em vez do índice 100.
-        Cidades com valor < R$ 1.000/m² são descartadas (índice numérico).
+        Estratégia em duas fases:
+          1. Tabela markdown ``| Cidade | UF | …% | …% | preço |`` — fonte
+             primária, com UF explícita por linha.
+          2. Parágrafo do ranking textual (``Vitória (ES) … (R$ 14.818/m²);
+             Florianópolis (R$ 13.208/m²); …``) — backup. Como apenas a
+             primeira cidade tem (UF) ali, reconciliamos cada cidade textual
+             com a tabela por nome normalizado para herdar a UF correta.
+
+        Deduplica por (cidade normalizada, UF), preservando o maior valor
+        quando há colisão entre tabela e ranking. Filtra valores < R$ 1.000
+        (variações % e índices base 100 não passam).
         """
         seen: dict[str, CityPpm2Reading] = {}
-        for m in _PRICE_LINE.finditer(markdown):
+
+        # ---- Fase 1: tabela ------------------------------------------- #
+        for m in _TABLE_ROW.finditer(markdown):
             city_raw = m.group("city").strip()
             state = m.group("state").upper()
             value = _parse_brl_number(m.group("value"))
             if value is None or value < 1_000:
-                # Provavelmente é variação % ou índice, não R$/m².
                 continue
             key = f"{_normalize_city(city_raw)}|{state}"
             existing = seen.get(key)
             if existing is None or value > existing.mean_ppm2_brl:
                 seen[key] = CityPpm2Reading(
-                    city=city_raw,
-                    state=state,
-                    mean_ppm2_brl=value,
-                    year=year,
-                    month=month,
+                    city=city_raw, state=state, mean_ppm2_brl=value,
+                    year=year, month=month,
                 )
+
+        # ---- Fase 2: parágrafo do ranking ----------------------------- #
+        # Mapa cidade_normalizada → UF (da tabela). Permite herdar UF
+        # quando o ranking textual menciona a cidade sem (UF).
+        city_to_state = {
+            _normalize_city(r.city): r.state for r in seen.values() if r.state
+        }
+        for m in _RANK_ENTRY.finditer(markdown):
+            city_raw = m.group("city").strip()
+            value = _parse_brl_number(m.group("value"))
+            if value is None or value < 1_000:
+                continue
+            normalized = _normalize_city(city_raw)
+            state = city_to_state.get(normalized)
+            if not state:
+                # Cidade só apareceu no ranking textual sem casar com a
+                # tabela — preserva ainda assim (UF=None), permite ao
+                # caller filtrar/avisar.
+                key = f"{normalized}|"
+                existing = seen.get(key)
+                if existing is None or value > existing.mean_ppm2_brl:
+                    seen[key] = CityPpm2Reading(
+                        city=city_raw, state=None, mean_ppm2_brl=value,
+                        year=year, month=month,
+                    )
+                continue
+            key = f"{normalized}|{state}"
+            existing = seen.get(key)
+            if existing is None or value > existing.mean_ppm2_brl:
+                seen[key] = CityPpm2Reading(
+                    city=city_raw, state=state, mean_ppm2_brl=value,
+                    year=year, month=month,
+                )
+
         return sorted(seen.values(), key=lambda r: r.mean_ppm2_brl, reverse=True)
 
     def fetch_and_parse(self, year: int, month: int) -> list[CityPpm2Reading]:

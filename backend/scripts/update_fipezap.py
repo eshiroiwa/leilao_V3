@@ -72,11 +72,8 @@ def main() -> int:
         }
         for r in readings
     ]
-    # Upsert: conflito em (city, state, asof_year, asof_month) atualiza valor.
-    sb.client.table("city_ppm2_stats").upsert(
-        rows, on_conflict="city,state,asof_year,asof_month"
-    ).execute()
-    print(f"\n✓ Upserted {len(rows)} row(s) em city_ppm2_stats.")
+    n_upserted = sb.upsert_city_ppm2_stats(rows)
+    print(f"\n✓ Upserted {n_upserted} row(s) em city_ppm2_stats.")
     return 0
 
 

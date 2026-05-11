@@ -506,6 +506,32 @@ class SupabaseService:
     # FipeZAP — preço médio R$/m² por cidade (alimentada por
     # ``scripts/update_fipezap.py``).
     # ------------------------------------------------------------------ #
+    def upsert_city_ppm2_stats(self, rows: list[dict[str, Any]]) -> int:
+        """Upsert em batch na ``city_ppm2_stats``.
+
+        Conflito em ``(city, state, asof_year, asof_month)`` atualiza o
+        valor. Linhas inválidas (sem ``city`` ou ``mean_ppm2_brl``) são
+        descartadas com warning — não levanta para que o script CLI
+        possa popular o mês inteiro mesmo com 1-2 linhas problemáticas.
+        Devolve o número de linhas que foram para o upsert.
+        """
+        clean = [
+            r for r in rows
+            if r.get("city") and r.get("mean_ppm2_brl") and r.get("asof_year")
+            and r.get("asof_month")
+        ]
+        if not clean:
+            return 0
+        try:
+            (
+                self._client.table("city_ppm2_stats")
+                .upsert(clean, on_conflict="city,state,asof_year,asof_month")
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha no upsert city_ppm2_stats: {exc}") from exc
+        return len(clean)
+
     def get_latest_city_ppm2(
         self, *, city: str, state: str | None = None
     ) -> dict[str, Any] | None:
