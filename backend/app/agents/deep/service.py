@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents.deep.nodes.amenities import fetch_amenities
+from app.agents.deep.nodes.condition_assessment import assess_condition
 from app.agents.deep.nodes.demographics import fetch_demographics
 from app.agents.deep.nodes.neighborhood_stats import (
     compute_flipping_potential,
@@ -34,6 +35,7 @@ from app.agents.deep.nodes.synthesize import synthesize
 from app.agents.deep.nodes.urban_risks import fetch_urban_risks
 from app.agents.deep.schemas import (
     AmenitiesResult,
+    ConditionAssessmentResult,
     DemographicsResult,
     FlippingResult,
     LiquidityResult,
@@ -51,6 +53,7 @@ from app.services.google_maps_service import (
     get_google_maps_service,
 )
 from app.services.supabase_service import SupabaseService, get_supabase_service
+from app.services.vision_service import get_vision_service
 
 logger = get_logger(__name__)
 
@@ -202,6 +205,12 @@ async def run_deep_analysis_inline(
         address_full=address_full,
         matricula=prop.get("registry_number") or prop.get("matricula"),
     )
+    # Vision é síncrono (LangChain) — joga numa thread pra não bloquear o loop.
+    condition_task = asyncio.to_thread(
+        assess_condition,
+        image_url=prop.get("image_url"),
+        vision=get_vision_service(),
+    )
 
     # asyncio.gather + return_exceptions para que UM nó com falha NÃO
     # derrube o pipeline inteiro.
@@ -210,6 +219,7 @@ async def run_deep_analysis_inline(
         amenities_task,
         urban_risks_task,
         prior_auction_task,
+        condition_task,
         return_exceptions=True,
     )
 
@@ -225,6 +235,9 @@ async def run_deep_analysis_inline(
     amenities = _ok(results[1], AmenitiesResult())
     urban_risks_pair = _ok(results[2], (UrbanRisksResult(), []))
     prior_auction_pair = _ok(results[3], (PriorAuctionResult(), []))
+    condition_assessment: ConditionAssessmentResult = _ok(
+        results[4], ConditionAssessmentResult(confidence="LOW")
+    )
 
     demographics, demo_docs = demographics_pair
     urban_risks, risk_docs = urban_risks_pair
@@ -272,6 +285,10 @@ async def run_deep_analysis_inline(
         llm_calls += 1
     if urban_risks.items:
         llm_calls += 1
+    # Vision conta como LLM call quando a foto foi processada com sucesso
+    # (conservation_level != None significa que o modelo respondeu).
+    if condition_assessment.conservation_level is not None:
+        llm_calls += 1
 
     return {
         # Demografia / liquidez
@@ -307,6 +324,8 @@ async def run_deep_analysis_inline(
         # Prior auction
         "prior_auction_count": prior_auction.count,
         "prior_auction_evidence": prior_auction.evidence,
+        # Condition assessment (Vision LLM — opcional/sinal)
+        "condition_assessment": condition_assessment.model_dump(mode="json"),
         # Synthesis
         "overall_score": synthesis.overall_score,
         "summary_text": synthesis.summary_text,

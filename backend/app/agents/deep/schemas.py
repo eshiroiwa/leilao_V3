@@ -118,6 +118,34 @@ class PriorAuctionResult(BaseModel):
 # =============================================================================
 # Input / Output do pipeline
 # =============================================================================
+ConservationLevel = Literal["novo", "bom", "regular", "mau", "ruina"]
+"""Estado físico do imóvel inferido pelo Vision LLM sobre a foto do edital."""
+
+SuggestedRenovationLevel = Literal["none", "basic", "moderate", "full", "premium"]
+"""Sugestão de nível de reforma — espelha ``opportunity.RenovationLevel``."""
+
+
+class ConditionAssessmentResult(BaseModel):
+    """Avaliação do estado de conservação por análise visual da foto do edital.
+
+    Estritamente um SINAL para o usuário — NÃO sobrescreve o
+    ``renovation_level`` informado no Agente 3. Quando Vision detecta
+    risco estrutural (hidráulica/elétrica/fachada/umidade), o item entra
+    em ``risk_flags`` e o frontend pode realçar como warning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    conservation_level: ConservationLevel | None = None
+    suggested_renovation_level: SuggestedRenovationLevel | None = None
+    # Itens problemáticos detectados. Cada string é frase curta acionável.
+    risk_flags: list[str] = Field(default_factory=list, max_length=10)
+    image_url: str | None = None
+    notes: str | None = Field(default=None, max_length=600)
+    confidence: Confidence = "LOW"
+    cost_estimate_usd: float | None = None
+
+
 class DeepAnalysisInput(BaseModel):
     property_id: str
     opportunity_analysis_id: str | None = None
@@ -148,6 +176,7 @@ class DeepAnalysisResult(BaseModel):
     amenities: AmenitiesResult | None = None
     urban_risks: UrbanRisksResult | None = None
     prior_auction: PriorAuctionResult | None = None
+    condition_assessment: ConditionAssessmentResult | None = None
 
     # Síntese
     overall_score: int | None = Field(default=None, ge=1, le=5)

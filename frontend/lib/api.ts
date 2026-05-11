@@ -271,6 +271,17 @@ export type DeepAnalysisStatus = "pending" | "running" | "completed" | "failed";
 /** Confidence específica do AGENTE 4 — só 3 níveis (sem INSUFFICIENT). */
 export type DeepConfidence = "HIGH" | "MEDIUM" | "LOW";
 
+/** Saída do nó CONDITION ASSESSMENT (Vision LLM sobre foto do edital). */
+export type ConditionAssessment = {
+  conservation_level: "novo" | "bom" | "regular" | "mau" | "ruina" | null;
+  suggested_renovation_level: "none" | "basic" | "moderate" | "full" | "premium" | null;
+  risk_flags: string[];
+  image_url: string | null;
+  notes: string | null;
+  confidence: DeepConfidence;
+  cost_estimate_usd: number | null;
+};
+
 export type UrbanRiskItem = {
   type: string;
   summary: string;
@@ -335,6 +346,9 @@ export type DeepAnalysisRow = {
   // histórico
   prior_auction_count?: number | null;
   prior_auction_evidence?: Record<string, unknown> | null;
+
+  // Vision (foto do edital) — opcional, vira null quando property sem image_url
+  condition_assessment?: ConditionAssessment | null;
 
   // síntese
   overall_score?: number | null;
