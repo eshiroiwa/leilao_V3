@@ -1,0 +1,1 @@
+"""Nodes do Agente Legal."""

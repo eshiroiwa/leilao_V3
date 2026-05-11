@@ -372,6 +372,52 @@ export type StartDeepAnalysisResponse = {
   row: DeepAnalysisRow | null;
 };
 
+// =============================================================================
+// Agente Legal — CNJ DataJud + ONR (sob demanda)
+// =============================================================================
+export type LegalCheckStatus = "completed" | "skipped" | "failed";
+
+export type LegalProcessSummary = {
+  numero_processo: string;
+  classe_codigo: number | null;
+  classe_nome: string | null;
+  orgao_julgador: string | null;
+  data_ajuizamento: string | null;
+  tribunal: string;
+  is_critical: boolean;
+};
+
+export type OwnerProcessesResult = {
+  status: LegalCheckStatus;
+  skipped_reason: string | null;
+  cpf_cnpj: string | null;
+  tribunal: string | null;
+  total_hits: number;
+  critical_hits: number;
+  critical_labels: string[];
+  sample_processes: LegalProcessSummary[];
+};
+
+export type MatriculaCheckResult = {
+  status: LegalCheckStatus;
+  skipped_reason: string | null;
+  matricula: string | null;
+  registry_office: string | null;
+  onus_summary: string[];
+  fetched_at: string | null;
+};
+
+export type LegalCheckResult = {
+  property_id: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  owner_processes: OwnerProcessesResult;
+  matricula_check: MatriculaCheckResult;
+  has_critical_findings: boolean;
+  critical_findings: string[];
+};
+
 export type OpportunityAnalysisRow = {
   id: string;
   property_id: string;
