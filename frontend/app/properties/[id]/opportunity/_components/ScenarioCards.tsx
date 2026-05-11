@@ -103,6 +103,25 @@ function ScenarioCard({
               {formatPct(s.net_roi_pct)}
             </span>
           </div>
+          {/* ROI anualizado — só mostra quando difere do bruto (holding ≠ 12m). */}
+          {Math.abs(s.annualized_net_roi_pct - s.net_roi_pct) > 1e-4 && (
+            <div className="mt-0.5 flex items-baseline justify-between">
+              <span className="text-[11px] text-muted-foreground">
+                ROI anualizado
+              </span>
+              <span
+                className={cn(
+                  "text-xs font-medium tabular-nums",
+                  s.annualized_net_roi_pct >= 0
+                    ? "text-success-700"
+                    : "text-danger-700",
+                )}
+                title="(1 + ROI)^(12/holding_months) − 1"
+              >
+                {formatPct(s.annualized_net_roi_pct)} a.a.
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="space-y-1.5 border-t pt-3">
@@ -121,6 +140,12 @@ function ScenarioCard({
           )}
           {s.other_costs > 0 && (
             <Row label="Outros" value={formatBRL(s.other_costs)} />
+          )}
+          {s.holding_costs != null && s.holding_costs > 0 && (
+            <Row
+              label="Carregamento (IPTU+condo)"
+              value={formatBRL(s.holding_costs)}
+            />
           )}
           <Row
             label="Custo aquisição"

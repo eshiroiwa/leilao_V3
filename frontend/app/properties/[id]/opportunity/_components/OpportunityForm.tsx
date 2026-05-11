@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import type {
   OpportunityAssumptions,
   OpportunityInput,
+  PJRegime,
   Property,
   RenovationLevel,
 } from "@/lib/api";
@@ -99,10 +100,51 @@ export function OpportunityForm({
             ))}
           </div>
           {input.buyer_type === "PJ" && (
-            <p className="text-[11px] text-warning-700">
-              Estimativa: tributação simplificada (Lucro Presumido ≈ 6,5%
-              sobre venda). Consulte seu contador.
-            </p>
+            <div className="space-y-1.5 rounded-md border bg-muted/30 p-2">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Regime tributário
+              </div>
+              <div className="flex gap-1.5">
+                {(
+                  [
+                    {
+                      v: "presumido" as const,
+                      l: "Presumido",
+                      d: "~6,5% sobre venda",
+                    },
+                    {
+                      v: "real" as const,
+                      l: "Real",
+                      d: "IRPJ+CSLL 24% + PIS/COFINS 9,25%",
+                    },
+                  ]
+                ).map(({ v, l, d }) => {
+                  const active = (input.pj_regime ?? "presumido") === v;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => set("pj_regime", v as PJRegime)}
+                      className={`flex-1 rounded border px-2 py-1.5 text-left text-[11px] transition-colors ${
+                        active
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border hover:bg-muted"
+                      }`}
+                      title={d}
+                    >
+                      <div className="text-xs font-semibold">{l}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {d}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-warning-700">
+                Estimativa simplificada. Em deals isolados lucrativos,
+                Presumido costuma pagar menos imposto. Consulte seu contador.
+              </p>
+            </div>
           )}
         </div>
 
@@ -287,6 +329,89 @@ export function OpportunityForm({
           <p className="text-[11px] text-muted-foreground">
             Desocupação, advogado, mudança, etc.
           </p>
+        </div>
+
+        {/* Horizonte e custo de carregamento */}
+        <div className="space-y-3 rounded-md border border-dashed p-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Horizonte e carregamento
+            </div>
+            <span className="text-[10px] text-muted-foreground">
+              afeta ROI anualizado
+            </span>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="holding_months" className="text-xs">
+              Horizonte até a revenda (meses)
+            </Label>
+            <Input
+              id="holding_months"
+              type="number"
+              min={1}
+              max={120}
+              step={1}
+              value={input.holding_months ?? 12}
+              onChange={(e) =>
+                set(
+                  "holding_months",
+                  Math.max(1, Math.min(120, Number(e.target.value || 12))),
+                )
+              }
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Default 12 = ROI anualizado idêntico ao bruto. Holding maior
+              revela compressão temporal (ex.: 50% bruto em 24 meses ≈ 22,5% a.a.).
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="monthly_iptu" className="text-xs">
+                IPTU mensal corrente (R$)
+              </Label>
+              <Input
+                id="monthly_iptu"
+                type="number"
+                min={0}
+                step={10}
+                value={input.monthly_iptu ?? 0}
+                onChange={(e) =>
+                  set("monthly_iptu", Number(e.target.value || 0))
+                }
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="monthly_condo" className="text-xs">
+                Condomínio mensal (R$)
+              </Label>
+              <Input
+                id="monthly_condo"
+                type="number"
+                min={0}
+                step={10}
+                value={input.monthly_condo ?? 0}
+                onChange={(e) =>
+                  set("monthly_condo", Number(e.target.value || 0))
+                }
+              />
+            </div>
+          </div>
+          {(input.monthly_iptu || input.monthly_condo) && (
+            <p className="text-[10px] text-muted-foreground">
+              Custo de carregamento estimado:{" "}
+              <span className="font-medium text-foreground tabular-nums">
+                {formatBRL(
+                  (input.holding_months ?? 12) *
+                    ((input.monthly_iptu ?? 0) + (input.monthly_condo ?? 0)),
+                )}
+              </span>{" "}
+              ({input.holding_months ?? 12} meses ×{" "}
+              {formatBRL((input.monthly_iptu ?? 0) + (input.monthly_condo ?? 0))}
+              /mês)
+            </p>
+          )}
         </div>
 
         {/* Overrides de alíquotas */}

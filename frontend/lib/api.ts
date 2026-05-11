@@ -633,6 +633,18 @@ export const api = {
       `/api/v1/deep-analyses/${encodeURIComponent(analysisId)}`,
     ),
 
+  // ===== Agente Legal =====
+  runLegalCheck: (propertyId: string) =>
+    request<LegalCheckResult & { id?: string | null }>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/legal-checks`,
+      { method: "POST", body: "{}" },
+    ),
+
+  getLatestLegalCheck: (propertyId: string) =>
+    request<(LegalCheckResult & { id?: string | null }) | null>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/legal-checks/latest`,
+    ),
+
   // ===== Dashboard (home) =====
   getDashboard: (params?: {
     upcoming_window_days?: number;

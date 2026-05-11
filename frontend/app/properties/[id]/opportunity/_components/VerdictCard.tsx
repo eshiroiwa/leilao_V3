@@ -202,6 +202,8 @@ export function VerdictCard({
           </p>
         </div>
 
+        <ProbabilisticPanel result={result} />
+
         <VerdictExplanation result={result} />
 
         {result.warnings.length > 0 && (
@@ -282,6 +284,163 @@ function VerdictExplanation({ result }: { result: OpportunityResult }) {
         )}
       </div>
     </details>
+  );
+}
+
+function ProbabilisticPanel({ result }: { result: OpportunityResult }) {
+  // Só renderiza quando AO MENOS uma métrica probabilística está disponível.
+  // Preview client-side já preenche expected/prob_loss; CDI/MC vêm do server.
+  const hasE = result.expected_net_roi_pct != null;
+  const hasCdi = result.cdi_reference_annual_pct != null;
+  const hasMc = result.monte_carlo_n != null && result.monte_carlo_n > 0;
+  if (!hasE && !hasCdi && !hasMc) return null;
+
+  const expected = result.expected_net_roi_pct ?? null;
+  const expectedAnnual = result.expected_annualized_net_roi_pct ?? null;
+  const probLoss = result.prob_loss ?? null;
+  const cdi = result.cdi_reference_annual_pct ?? null;
+  const spread = result.roi_vs_cdi_spread_pct ?? null;
+  const var5 = result.monte_carlo_var_5_net_roi ?? null;
+  const p95 = result.monte_carlo_p95_net_roi ?? null;
+  const probBelowCdi = result.monte_carlo_p_below_cdi ?? null;
+
+  const spreadAccent =
+    spread == null
+      ? ""
+      : spread >= 0
+        ? "text-success-700"
+        : "text-danger-700";
+  const probLossAccent =
+    probLoss == null
+      ? ""
+      : probLoss >= 0.5
+        ? "text-danger-700"
+        : probLoss >= 0.2
+          ? "text-warning-700"
+          : "text-success-700";
+
+  return (
+    <div className="rounded-lg border bg-card/60 p-3 space-y-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Análise probabilística
+        </h4>
+        {hasMc && (
+          <span className="text-[10px] text-muted-foreground">
+            Monte Carlo n={result.monte_carlo_n?.toLocaleString("pt-BR")}
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {expected != null && (
+          <MiniKPI
+            label="E[ROI]"
+            value={formatPct(expected)}
+            sub={
+              expectedAnnual != null && Math.abs(expectedAnnual - expected) > 1e-4
+                ? `${formatPct(expectedAnnual)} a.a.`
+                : "ponderado 30/40/30"
+            }
+          />
+        )}
+        {probLoss != null && (
+          <MiniKPI
+            label="P[prejuízo]"
+            value={formatPct(probLoss)}
+            accent={probLossAccent}
+            sub={
+              probLoss >= 0.5
+                ? "alto risco"
+                : probLoss >= 0.2
+                  ? "atenção"
+                  : "baixo risco"
+            }
+          />
+        )}
+        {cdi != null && (
+          <MiniKPI
+            label="CDI (BACEN)"
+            value={formatPct(cdi)}
+            sub="renda fixa referência"
+          />
+        )}
+        {spread != null && (
+          <MiniKPI
+            label="Spread vs CDI"
+            value={`${spread >= 0 ? "+" : ""}${formatPct(spread)}`}
+            accent={spreadAccent}
+            sub={spread >= 0 ? "supera renda fixa" : "fica abaixo do CDI"}
+          />
+        )}
+      </div>
+
+      {(var5 != null || p95 != null || probBelowCdi != null) && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            Cauda da distribuição (Monte Carlo)
+          </summary>
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {var5 != null && (
+              <MiniKPI
+                label="VaR 5%"
+                value={formatPct(var5)}
+                accent={var5 < 0 ? "text-danger-700" : "text-foreground"}
+                sub="pior 5% dos cenários"
+              />
+            )}
+            {p95 != null && (
+              <MiniKPI
+                label="P95"
+                value={formatPct(p95)}
+                accent="text-success-700"
+                sub="melhor 5% dos cenários"
+              />
+            )}
+            {probBelowCdi != null && (
+              <MiniKPI
+                label="P[ROI<CDI]"
+                value={formatPct(probBelowCdi)}
+                accent={
+                  probBelowCdi >= 0.5
+                    ? "text-danger-700"
+                    : probBelowCdi >= 0.2
+                      ? "text-warning-700"
+                      : "text-success-700"
+                }
+                sub="chance de perder p/ renda fixa"
+              />
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function MiniKPI({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  accent?: string;
+}) {
+  return (
+    <div className="rounded-md border bg-card/70 p-2">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div className={cn("mt-0.5 text-sm font-semibold tabular-nums", accent)}>
+        {value}
+      </div>
+      {sub && (
+        <div className="mt-0.5 text-[10px] text-muted-foreground">{sub}</div>
+      )}
+    </div>
   );
 }
 

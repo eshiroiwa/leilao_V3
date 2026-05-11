@@ -503,6 +503,39 @@ class SupabaseService:
         return res.data or []
 
     # ------------------------------------------------------------------ #
+    # Legal checks (Agente Legal — CNJ DataJud + ONR stub).
+    # ------------------------------------------------------------------ #
+    def insert_legal_check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persiste uma execução do Agente Legal. Modelo "uma row por execução"."""
+        try:
+            res = (
+                self._client.table("legal_checks").insert(payload).execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(f"Falha ao inserir legal_check: {exc}") from exc
+        data = res.data or []
+        if not data:
+            raise SupabaseError("legal_checks insert retornou vazio")
+        return data[0]
+
+    def get_latest_legal_check(self, property_id: str) -> dict[str, Any] | None:
+        """Última execução do Agente Legal para a property."""
+        try:
+            res = (
+                self._client.table("legal_checks")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.warning("supabase.legal_check.fetch_failed", error=str(exc))
+            return None
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
     # FipeZAP — preço médio R$/m² por cidade (alimentada por
     # ``scripts/update_fipezap.py``).
     # ------------------------------------------------------------------ #

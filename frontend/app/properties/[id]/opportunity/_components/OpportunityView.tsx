@@ -26,6 +26,7 @@ import {
 } from "@/lib/opportunity-math";
 import { formatBRL } from "@/lib/utils";
 
+import { LegalCheckCard } from "./LegalCheckCard";
 import { OpportunityForm } from "./OpportunityForm";
 import { ReportButton } from "./ReportButton";
 import { ScenarioCards } from "./ScenarioCards";
@@ -240,6 +241,8 @@ export function OpportunityView({
         <VerdictCard result={result} property={property} />
 
         <ScenarioCards result={result} />
+
+        <LegalCheckCard property={property} />
 
         {savedHistory.length > 0 && (
           <Card>

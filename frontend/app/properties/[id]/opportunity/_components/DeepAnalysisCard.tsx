@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  CameraOff,
   CheckCircle2,
   ExternalLink,
   GraduationCap,
@@ -20,6 +21,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type {
+  ConditionAssessment,
   DeepAnalysisRow,
   DeepConfidence,
   UrbanRiskItem,
@@ -132,6 +134,11 @@ export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
             distance={row.nearest_hospital_m}
           />
         </div>
+
+        {/* Avaliação visual (Vision LLM) — opcional, vira null sem foto */}
+        {row.condition_assessment && (
+          <ConditionAssessmentBlock condition={row.condition_assessment} />
+        )}
 
         {/* Red / Green flags */}
         {(row.red_flags?.length || row.green_flags?.length) ? (
@@ -396,6 +403,123 @@ function UrbanRiskRow({ risk }: { risk: UrbanRiskItem }) {
         {confidenceLabel(risk.confidence)}
       </Badge>
     </li>
+  );
+}
+
+// =============================================================================
+// ConditionAssessmentBlock — Vision LLM sobre foto do edital
+// =============================================================================
+const CONSERVATION_META: Record<
+  Exclude<ConditionAssessment["conservation_level"], null>,
+  { label: string; tone: "success" | "warning" | "danger" | "secondary" }
+> = {
+  novo: { label: "Novo", tone: "success" },
+  bom: { label: "Bom", tone: "success" },
+  regular: { label: "Regular", tone: "secondary" },
+  mau: { label: "Mau", tone: "warning" },
+  ruina: { label: "Ruína", tone: "danger" },
+};
+
+const RENO_SUGGESTION_LABEL: Record<
+  Exclude<ConditionAssessment["suggested_renovation_level"], null>,
+  string
+> = {
+  none: "Nenhuma",
+  basic: "Básica",
+  moderate: "Moderada",
+  full: "Completa",
+  premium: "Premium",
+};
+
+function ConditionAssessmentBlock({
+  condition,
+}: {
+  condition: ConditionAssessment;
+}) {
+  const hasData = condition.conservation_level != null;
+  const consMeta = condition.conservation_level
+    ? CONSERVATION_META[condition.conservation_level]
+    : null;
+
+  return (
+    <div className="space-y-2 rounded-md border border-dashed bg-card/40 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Análise visual (Vision)
+        </h4>
+        <Badge variant={confidenceVariant(condition.confidence)} className="text-[10px]">
+          confiança {confidenceLabel(condition.confidence)}
+        </Badge>
+      </div>
+
+      {!hasData ? (
+        <div className="flex items-start gap-2 text-xs text-muted-foreground">
+          <CameraOff className="mt-0.5 size-3.5 shrink-0" />
+          <span>{condition.notes || "Sem análise visual disponível."}</span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_2fr]">
+          {condition.image_url ? (
+            // biome-ignore lint/performance/noImgElement: domínio variado, sem loader configurado
+            <img
+              src={condition.image_url}
+              alt="Foto do imóvel"
+              className="aspect-video w-full rounded-md border object-cover"
+            />
+          ) : (
+            <div className="flex aspect-video items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
+              sem foto
+            </div>
+          )}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+              {consMeta && (
+                <span>
+                  <span className="text-muted-foreground">Conservação:</span>{" "}
+                  <Badge variant={consMeta.tone} className="text-[10px]">
+                    {consMeta.label}
+                  </Badge>
+                </span>
+              )}
+              {condition.suggested_renovation_level && (
+                <span>
+                  <span className="text-muted-foreground">
+                    Reforma sugerida:
+                  </span>{" "}
+                  <strong>
+                    {RENO_SUGGESTION_LABEL[condition.suggested_renovation_level]}
+                  </strong>
+                </span>
+              )}
+            </div>
+            {condition.notes && (
+              <p className="text-[11px] text-muted-foreground">
+                {condition.notes}
+              </p>
+            )}
+            {condition.risk_flags.length > 0 && (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-danger-700">
+                  Itens observados na foto
+                </div>
+                <ul className="space-y-1 text-xs">
+                  {condition.risk_flags.map((flag, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 size-3 shrink-0 text-danger-700" />
+                      <span>{flag}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground italic">
+              Sinal informativo — não substitui o nível de reforma que você
+              informou no Agente 3.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ from app.api.routes import (
     agents,
     dashboard,
     deep,
+    legal,
     opportunity,
     properties,
     valuations,
@@ -18,6 +19,7 @@ api_router.include_router(valuations.router)
 api_router.include_router(opportunity.router)
 api_router.include_router(deep.router_property)
 api_router.include_router(deep.router_global)
+api_router.include_router(legal.router)
 api_router.include_router(dashboard.router)
 
 __all__ = ["api_router"]
