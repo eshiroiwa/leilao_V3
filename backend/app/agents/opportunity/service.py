@@ -122,6 +122,9 @@ def _build_scenario(
     holding_months: int = 12,
     monthly_iptu: float = 0.0,
     monthly_condo: float = 0.0,
+    pj_regime: str = "presumido",
+    pj_real_income_rate: float = 0.24,
+    pj_real_revenue_rate: float = 0.0925,
 ) -> Scenario:
     costs = compute_acquisition_costs(
         bid=bid,
@@ -145,6 +148,9 @@ def _build_scenario(
         gross_profit=gp_pre_tax,
         pf_brackets=pf_brackets,
         pj_rate=pj_rate,
+        pj_regime=pj_regime,
+        pj_real_income_rate=pj_real_income_rate,
+        pj_real_revenue_rate=pj_real_revenue_rate,
     )
     pb = compute_profit_and_roi(
         sale_price=sale_price,
@@ -317,6 +323,9 @@ def run_analysis(
         holding_months=inp.holding_months,
         monthly_iptu=float(inp.monthly_iptu),
         monthly_condo=float(inp.monthly_condo),
+        pj_regime=inp.pj_regime,
+        pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
+        pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
     )
 
     pessimista = _build_scenario(label="pessimista", sale_price=pess_p, **common_kwargs)
@@ -343,6 +352,9 @@ def run_analysis(
             pj_rate=A.IR_PJ_PCT,
             target_net_roi=inp.target_net_roi_pct,
             holding_costs=holding_costs,
+            pj_regime=inp.pj_regime,
+            pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
+            pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
         )
     )
     if max_bid is not None:
@@ -361,6 +373,7 @@ def run_analysis(
         renovation_level=inp.renovation_level,
         renovation_cost=renovation_cost,
         renovation_area_source=_ren_area_source,
+        pj_regime=inp.pj_regime,
     )
 
     decision = classify_verdict(

@@ -11,6 +11,8 @@ from app.agents.comparables.pricing import (
     detect_bimodal_ppm2,
     effective_target_area_m2,
     estimate_price,
+    pick_cluster_by_area_proximity,
+    split_bimodal_clusters,
     trim_outliers,
     weighted_median,
     weighted_quantile,
@@ -280,6 +282,134 @@ def test_detect_bimodal_small_sample_returns_false() -> None:
     """Amostras pequenas não dão evidência suficiente."""
     comps = [_comp(0, 6_000), _comp(1, 12_000)]
     assert detect_bimodal_ppm2(comps, gap_pct=0.30, min_each_side=2) is False
+
+
+# =============================================================================
+# Segmentação por bimodalidade (Fase 1.6)
+# =============================================================================
+def _comp_with_area(idx: int, ppm2: float, area: float, weight: float = 1.0) -> Comparable:
+    return Comparable(
+        listing_id=f"id-{idx}",
+        ppm2=ppm2,
+        weight=weight,
+        area_m2=area,
+    )
+
+
+def test_split_bimodal_clusters_separates_at_largest_gap() -> None:
+    """Os dois clusters precisam estar contíguos no R$/m², separados pelo
+    maior gap relativo entre vizinhos consecutivos."""
+    comps = [
+        _comp(0, 6_000),
+        _comp(1, 6_200),
+        _comp(2, 6_500),
+        _comp(3, 12_000),
+        _comp(4, 12_300),
+        _comp(5, 12_500),
+    ]
+    split = split_bimodal_clusters(comps)
+    assert split is not None
+    low, high = split
+    assert all(c.ppm2 < 7_000 for c in low)
+    assert all(c.ppm2 > 11_000 for c in high)
+    assert len(low) == 3 and len(high) == 3
+
+
+def test_split_bimodal_clusters_returns_none_when_unimodal() -> None:
+    """Distribuição contínua → sem split."""
+    comps = [_comp(i, 6_000 + i * 200) for i in range(8)]
+    assert split_bimodal_clusters(comps) is None
+
+
+def test_pick_cluster_by_area_proximity_chooses_closest_area() -> None:
+    """Target tem 50m² (popular). Cluster low tem área média 45m²; high tem 90m².
+    Escolhemos low (mais próximo)."""
+    low = [
+        _comp_with_area(0, 6_000, 45),
+        _comp_with_area(1, 6_200, 50),
+        _comp_with_area(2, 6_500, 40),
+    ]
+    high = [
+        _comp_with_area(3, 12_000, 90),
+        _comp_with_area(4, 12_300, 100),
+    ]
+    chosen = pick_cluster_by_area_proximity(low, high, target_area_m2=50.0)
+    assert chosen is not None
+    cluster, side = chosen
+    assert side == "low"
+    assert cluster is low
+
+
+def test_pick_cluster_by_area_proximity_returns_none_without_areas() -> None:
+    """Sem área preenchida → None (caller cai no global)."""
+    low = [_comp(0, 6_000), _comp(1, 6_200)]  # área não preenchida
+    high = [_comp(2, 12_000), _comp(3, 12_300)]
+    chosen = pick_cluster_by_area_proximity(low, high, target_area_m2=50.0)
+    assert chosen is None
+
+
+def test_estimate_price_segments_bimodal_when_target_matches_low_cluster() -> None:
+    """Amostra bimodal: low ~6k (50m²) e high ~12k (100m²). Target 50m² →
+    deve usar o cluster low, com ppm2 ~6k em vez de mediana global ~9k."""
+    comps = [
+        _comp_with_area(0, 6_000, 50),
+        _comp_with_area(1, 6_200, 48),
+        _comp_with_area(2, 5_800, 52),
+        _comp_with_area(3, 6_100, 50),
+        _comp_with_area(4, 11_800, 100),
+        _comp_with_area(5, 12_000, 95),
+        _comp_with_area(6, 12_300, 105),
+        _comp_with_area(7, 11_900, 110),
+    ]
+    val = estimate_price(target_area_m2=50.0, comparables=comps)
+    assert val.method == "bimodal_cluster_low_median_ppm2"
+    assert val.ppm2_estimated is not None
+    assert 5_800 <= val.ppm2_estimated <= 6_300
+    # Comparáveis efetivamente usados: cluster low (4 itens), não 8.
+    assert val.comparables_used == 4
+
+
+def test_estimate_price_segments_bimodal_when_target_matches_high_cluster() -> None:
+    """Mesma amostra, target 100m² → cluster high."""
+    comps = [
+        _comp_with_area(0, 6_000, 50),
+        _comp_with_area(1, 6_200, 48),
+        _comp_with_area(2, 5_800, 52),
+        _comp_with_area(3, 6_100, 50),
+        _comp_with_area(4, 11_800, 100),
+        _comp_with_area(5, 12_000, 95),
+        _comp_with_area(6, 12_300, 105),
+        _comp_with_area(7, 11_900, 110),
+    ]
+    val = estimate_price(target_area_m2=100.0, comparables=comps)
+    assert val.method == "bimodal_cluster_high_median_ppm2"
+    assert val.ppm2_estimated is not None
+    assert 11_700 <= val.ppm2_estimated <= 12_400
+
+
+def test_estimate_price_falls_back_to_global_when_cluster_too_small() -> None:
+    """Cluster vencedor com n < min_acceptable (3) → volta pro global."""
+    comps = [
+        _comp_with_area(0, 6_000, 50),
+        _comp_with_area(1, 6_200, 48),  # só 2 no cluster low
+        _comp_with_area(2, 11_800, 100),
+        _comp_with_area(3, 12_000, 95),
+        _comp_with_area(4, 12_300, 105),
+        _comp_with_area(5, 11_900, 110),
+    ]
+    val = estimate_price(target_area_m2=50.0, comparables=comps)
+    # Cluster low é o mais próximo do target mas tem só 2 itens (< 3).
+    # Sistema cai no global (mediana 8.900) — comportamento de fallback.
+    assert val.method == "weighted_median_ppm2"
+    assert val.comparables_used == 6
+
+
+def test_estimate_price_global_path_when_unimodal() -> None:
+    """Sanity: sem bimodalidade, retorna ao caminho tradicional sem alteração."""
+    comps = [_comp_with_area(i, 8_000 + i * 100, 60) for i in range(8)]
+    val = estimate_price(target_area_m2=60.0, comparables=comps)
+    assert val.method == "weighted_median_ppm2"
+    assert val.comparables_used == 8
 
 
 # =============================================================================

@@ -21,6 +21,7 @@ from typing import Final, Literal
 # Tipos auxiliares
 # =============================================================================
 BuyerType = Literal["PF", "PJ"]
+PJRegime = Literal["presumido", "real"]
 RenovationLevel = Literal["none", "basic", "moderate", "full", "premium"]
 OccupancyKey = Literal["vacant", "occupied", "unknown"]
 VerdictType = Literal[
@@ -124,6 +125,22 @@ IR_PF_PCT: Final[float] = IR_PF_BRACKETS[0][1]
 # Usamos 6.5% para o cliente entender que é uma estimativa. O UI deve
 # DEIXAR CLARO que é "estimativa simplificada — consulte seu contador".
 IR_PJ_PCT: Final[float] = 0.065
+
+# Pessoa Jurídica — Lucro REAL (estimativa simplificada conservadora):
+#   * IRPJ 15% + CSLL 9% sobre o LUCRO (sale_price − acquisition_cost − realtor_fee).
+#     Ignoramos o adicional de 10% acima de R$240k/ano (depende do consolidado
+#     anual da empresa, não dá pra computar deal-a-deal de forma defensável).
+#   * PIS 1,65% + COFINS 7,6% sobre a RECEITA (não-cumulativo). Em Lucro Real
+#     o contribuinte tem crédito de PIS/COFINS sobre algumas despesas (ITBI,
+#     registro, materiais de reforma quando há nota), mas ignoramos os créditos
+#     na estimativa (cenário CONSERVADOR — imposto mais alto).
+#
+# Em deals com PREJUÍZO contábil, Lucro Real é vantajoso (IRPJ/CSLL = 0; só
+# PIS/COFINS sobre venda). Em deals lucrativos isolados, Presumido costuma
+# ganhar (6,5% liso vs ~24% sobre lucro + 9,25% sobre receita). O usuário PJ
+# que escolhe ``regime="real"`` geralmente JÁ é obrigado pelo regime anual.
+IR_PJ_REAL_INCOME_RATE: Final[float] = 0.24
+IR_PJ_REAL_REVENUE_RATE: Final[float] = 0.0925
 
 
 def pf_income_tax_progressive(

@@ -160,6 +160,46 @@ def test_income_tax_pj_on_sale_price_even_with_loss() -> None:
     ) == pytest.approx(32_500)
 
 
+def test_income_tax_pj_real_combines_income_and_revenue_parts() -> None:
+    """Lucro Real lucrativo: IRPJ+CSLL 24% sobre GP + PIS/COFINS 9,25% sobre venda."""
+    t = compute_income_tax(
+        buyer_type="PJ",
+        sale_price=500_000,
+        gross_profit=100_000,
+        pf_brackets=((float("inf"), 0.15),),
+        pj_rate=0.065,
+        pj_regime="real",
+    )
+    # 0,24 × 100k + 0,0925 × 500k = 24k + 46.250 = 70.250
+    assert t == pytest.approx(24_000 + 46_250)
+
+
+def test_income_tax_pj_real_loss_zeroes_irpj_csll_but_keeps_pis_cofins() -> None:
+    """Prejuízo no Lucro Real: IRPJ/CSLL = 0; PIS/COFINS ainda sobre venda."""
+    t = compute_income_tax(
+        buyer_type="PJ",
+        sale_price=500_000,
+        gross_profit=-50_000,
+        pf_brackets=((float("inf"), 0.15),),
+        pj_rate=0.065,
+        pj_regime="real",
+    )
+    # 0 + 0,0925 × 500k = 46.250
+    assert t == pytest.approx(46_250)
+
+
+def test_income_tax_pj_real_vs_presumido_higher_in_typical_deal() -> None:
+    """Em deal lucrativo isolado, Real geralmente paga MAIS que Presumido —
+    confirma que a heurística "Presumido é default" é defensável."""
+    common = dict(
+        buyer_type="PJ", sale_price=400_000, gross_profit=80_000,
+        pf_brackets=((float("inf"), 0.15),), pj_rate=0.065,
+    )
+    presumido = compute_income_tax(**common, pj_regime="presumido")
+    real = compute_income_tax(**common, pj_regime="real")
+    assert real > presumido
+
+
 # =============================================================================
 # compute_profit_and_roi
 # =============================================================================
@@ -255,7 +295,10 @@ def _round_trip_check(p: MaxBidParams, *, tol: float = 1e-6) -> float:
     R = p.sale_price * p.realtor_fee_pct
     GP = p.sale_price - A - R
     if p.buyer_type == "PJ":
-        T = p.sale_price * p.pj_rate
+        if p.pj_regime == "real":
+            T = p.sale_price * p.pj_real_revenue_rate + max(0.0, GP) * p.pj_real_income_rate
+        else:
+            T = p.sale_price * p.pj_rate
     else:
         # Aplica a tabela PROGRESSIVA para validar o lance resolvido.
         gp_positive = max(0.0, GP)
@@ -331,6 +374,50 @@ def test_solve_max_bid_pj_roundtrip() -> None:
         target_net_roi=0.40,
     )
     _round_trip_check(p)
+
+
+def test_solve_max_bid_pj_real_roundtrip_profitable() -> None:
+    """Round-trip do solver no regime Lucro Real, hipótese GP ≥ 0."""
+    p = MaxBidParams(
+        sale_price=600_000,
+        iptu_arrears=0,
+        condo_arrears=0,
+        renovation_cost=20_000,
+        other_costs=5_000,
+        auctioneer_fee_pct=0.05,
+        itbi_pct=0.03,
+        registration_pct=0.015,
+        realtor_fee_pct=0.06,
+        buyer_type="PJ",
+        pf_brackets=((float("inf"), 0.15),),
+        pj_rate=0.065,
+        target_net_roi=0.30,
+        pj_regime="real",
+    )
+    _round_trip_check(p)
+
+
+def test_solve_max_bid_pj_real_lower_bid_than_presumido_when_profitable() -> None:
+    """Deal lucrativo: PJ Real cobra mais imposto → lance máximo MENOR que Presumido."""
+    base = dict(
+        sale_price=600_000,
+        iptu_arrears=0,
+        condo_arrears=0,
+        renovation_cost=0,
+        other_costs=0,
+        auctioneer_fee_pct=0.05,
+        itbi_pct=0.03,
+        registration_pct=0.015,
+        realtor_fee_pct=0.06,
+        buyer_type="PJ",
+        pf_brackets=((float("inf"), 0.15),),
+        pj_rate=0.065,
+        target_net_roi=0.30,
+    )
+    bid_pres = solve_max_bid(MaxBidParams(pj_regime="presumido", **base))  # type: ignore[arg-type]
+    bid_real = solve_max_bid(MaxBidParams(pj_regime="real", **base))  # type: ignore[arg-type]
+    assert bid_pres is not None and bid_real is not None
+    assert bid_real < bid_pres
 
 
 def test_solve_max_bid_returns_none_when_fixed_costs_exceed_revenue() -> None:

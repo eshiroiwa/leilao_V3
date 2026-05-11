@@ -110,6 +110,7 @@ def build_warnings(
     renovation_level: str | None = None,
     renovation_cost: float | None = None,
     renovation_area_source: str | None = None,
+    pj_regime: str = "presumido",
 ) -> list[str]:
     """Lista heurística de avisos a serem mostrados no UI.
 
@@ -151,12 +152,20 @@ def build_warnings(
             "Cenário pessimista é deficitário — só prossiga se aceitar essa cauda de risco."
         )
 
-    # PJ — destaque que é estimativa
+    # PJ — destaque que é estimativa (mensagem específica por regime)
     if buyer_type == "PJ":
-        warnings.append(
-            "Imposto PJ é uma ESTIMATIVA simplificada (Lucro Presumido ≈ 6,5% sobre venda). "
-            "Consulte seu contador para o cálculo exato do seu regime."
-        )
+        if pj_regime == "real":
+            warnings.append(
+                "Imposto PJ Lucro Real é uma ESTIMATIVA simplificada "
+                "(IRPJ+CSLL ~24% sobre lucro + PIS/COFINS ~9,25% sobre venda, "
+                "SEM créditos de PIS/COFINS). Em deals isolados o regime "
+                "Presumido costuma ser mais vantajoso. Consulte seu contador."
+            )
+        else:
+            warnings.append(
+                "Imposto PJ é uma ESTIMATIVA simplificada (Lucro Presumido ≈ 6,5% sobre venda). "
+                "Consulte seu contador para o cálculo exato do seu regime."
+            )
 
     # Premissas usadas (transparência)
     if auctioneer_fee_source == "default":

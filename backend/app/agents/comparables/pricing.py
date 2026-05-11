@@ -29,12 +29,18 @@ class Comparable:
     imóvel-alvo (matching por ``condo_name`` normalizado). Quando há
     pelo menos 3 desses, ``estimate_price`` automaticamente usa SÓ
     eles e cravece a confidence (mesmo prédio é o melhor sinal possível).
+
+    ``area_m2`` é a área usada como denominador do ppm2 (mesma escala do
+    target). Opcional — quando preenchido, viabiliza a segmentação por
+    cluster bimodal escolhendo o cluster cuja área média é mais próxima
+    da área-alvo (heurística para discriminar premium vs popular).
     """
 
     listing_id: str
     ppm2: float
     weight: float  # tipicamente similarity × reliability
     same_building: bool = False
+    area_m2: float | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +188,81 @@ def detect_bimodal_ppm2(
 
 
 # ---------------------------------------------------------------------------
+# Segmentação por bimodalidade: separa a amostra no maior gap entre vizinhos
+# consecutivos de ppm2. Útil quando a CMA mistura prédios premium e popular
+# no mesmo bairro — a mediana global cai entre os clusters e não representa
+# nenhum deles.
+# ---------------------------------------------------------------------------
+def split_bimodal_clusters(
+    comps: list[Comparable],
+    *,
+    gap_pct: float = 0.30,
+    min_each_side: int = 2,
+) -> tuple[list[Comparable], list[Comparable]] | None:
+    """Quando :func:`detect_bimodal_ppm2` retorna True, devolve ``(low, high)``
+    — comparáveis ordenados em dois clusters separados pelo maior gap. Retorna
+    ``None`` quando não há bimodalidade clara (mesmos critérios da detecção).
+
+    Não filtra outliers — o caller pode aplicar :func:`trim_outliers` em cada
+    cluster separadamente se quiser. Pesos são preservados.
+    """
+    if not detect_bimodal_ppm2(comps, gap_pct=gap_pct, min_each_side=min_each_side):
+        return None
+    sorted_comps = sorted(comps, key=lambda c: c.ppm2)
+    # Acha o maior gap relativo entre vizinhos.
+    best_gap = 0.0
+    best_idx = -1
+    for i in range(1, len(sorted_comps)):
+        prev = sorted_comps[i - 1].ppm2
+        curr = sorted_comps[i].ppm2
+        if prev <= 0:
+            continue
+        rel = (curr - prev) / prev
+        if rel > best_gap:
+            best_gap = rel
+            best_idx = i
+    if best_idx == -1:
+        return None
+    return sorted_comps[:best_idx], sorted_comps[best_idx:]
+
+
+def pick_cluster_by_area_proximity(
+    cluster_low: list[Comparable],
+    cluster_high: list[Comparable],
+    target_area_m2: float,
+) -> tuple[list[Comparable], str] | None:
+    """Escolhe o cluster cuja área média (ponderada por peso) está mais
+    próxima de ``target_area_m2``. Devolve ``(cluster, "low"|"high")``.
+
+    Quando nenhum cluster tem área preenchida em quantidade suficiente
+    (≥ ``min_each_side`` itens), devolve ``None`` — sinal para o caller
+    cair de volta na mediana global com warning.
+
+    Heurística: em mercados bimodais, área costuma correlacionar com
+    padrão construtivo (premium tende a ter área maior). Não é garantia,
+    mas é o melhor sinal disponível sem informação extra de condomínio.
+    """
+    def _weighted_avg_area(cluster: list[Comparable]) -> float | None:
+        items = [(c.area_m2, c.weight) for c in cluster if c.area_m2 and c.weight > 0]
+        if len(items) < 2:
+            return None
+        total_w = sum(w for _, w in items)
+        if total_w <= 0:
+            return None
+        return sum(float(a) * w for a, w in items) / total_w  # type: ignore[arg-type]
+
+    avg_low = _weighted_avg_area(cluster_low)
+    avg_high = _weighted_avg_area(cluster_high)
+    if avg_low is None or avg_high is None or target_area_m2 <= 0:
+        return None
+    dist_low = abs(avg_low - target_area_m2)
+    dist_high = abs(avg_high - target_area_m2)
+    if dist_low <= dist_high:
+        return cluster_low, "low"
+    return cluster_high, "high"
+
+
+# ---------------------------------------------------------------------------
 # Coeficiente de variação (CV) — usado para classificar confidence.
 # ---------------------------------------------------------------------------
 def coefficient_of_variation(values: Iterable[float]) -> float:
@@ -323,6 +404,55 @@ def estimate_price(
         effective_k = min(trim_k, 1.0)
 
     comps = trim_outliers(comparables, k=effective_k) if trim else list(comparables)
+
+    # ----------------------------------------------------------------- #
+    # Caminho 2a: bimodalidade segmentada.
+    # Quando a amostra é claramente bimodal e temos área dos comparáveis,
+    # escolhemos o cluster cuja área média é mais próxima da do target
+    # (heurística — premium correlaciona com área maior). Só ativa se o
+    # cluster escolhido tiver ``n >= min_acceptable``; senão volta ao
+    # caminho global com confidence rebaixada. NUNCA relaxa confidence —
+    # se o cluster produzir HIGH, ok; se INSUFFICIENT, voltamos pro global.
+    # ----------------------------------------------------------------- #
+    method_label = "weighted_median_ppm2"
+    split = split_bimodal_clusters(comps, gap_pct=0.30, min_each_side=2)
+    if split is not None:
+        chosen = pick_cluster_by_area_proximity(split[0], split[1], target_area_m2)
+        if chosen is not None and len(chosen[0]) >= min_acceptable:
+            cluster_comps, _side = chosen
+            cluster_ppm2 = [c.ppm2 for c in cluster_comps]
+            cluster_weights = [c.weight for c in cluster_comps]
+            cluster_cv = coefficient_of_variation(cluster_ppm2)
+            cluster_confidence = classify_confidence(
+                len(cluster_comps),
+                cluster_cv,
+                min_acceptable=min_acceptable,
+                min_confident=min_confident,
+            )
+            # CV global (para comparação).
+            global_cv = coefficient_of_variation([c.ppm2 for c in comps])
+            global_confidence = classify_confidence(
+                len(comps),
+                global_cv,
+                min_acceptable=min_acceptable,
+                min_confident=min_confident,
+            )
+            # Cluster só substitui o global se NÃO PIORAR confidence.
+            order = {"INSUFFICIENT": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+            if order[cluster_confidence] >= order[global_confidence]:
+                ppm2_est = weighted_median(cluster_ppm2, cluster_weights)
+                p10 = weighted_quantile(cluster_ppm2, cluster_weights, 0.10)
+                p90 = weighted_quantile(cluster_ppm2, cluster_weights, 0.90)
+                return Valuation(
+                    estimated_price=round(ppm2_est * target_area_m2, 2),
+                    price_lower_bound=round(p10 * target_area_m2, 2),
+                    price_upper_bound=round(p90 * target_area_m2, 2),
+                    ppm2_estimated=round(ppm2_est, 2),
+                    confidence=cluster_confidence,
+                    method=f"bimodal_cluster_{_side}_median_ppm2",
+                    comparables_used=len(cluster_comps),
+                )
+
     ppm2_values = [c.ppm2 for c in comps]
     weights = [c.weight for c in comps]
 
@@ -344,7 +474,7 @@ def estimate_price(
         price_upper_bound=round(p90 * target_area_m2, 2),
         ppm2_estimated=round(ppm2_est, 2),
         confidence=confidence,
-        method="weighted_median_ppm2",
+        method=method_label,
         comparables_used=len(comps),
     )
 
@@ -414,6 +544,8 @@ __all__ = [
     "weighted_median",
     "trim_outliers",
     "detect_bimodal_ppm2",
+    "split_bimodal_clusters",
+    "pick_cluster_by_area_proximity",
     "coefficient_of_variation",
     "classify_confidence",
     "estimate_price",

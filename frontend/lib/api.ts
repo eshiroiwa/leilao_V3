@@ -160,8 +160,14 @@ export type Verdict =
   | "INVIAVEL"
   | "INDETERMINADO";
 
+/** Regime tributário para PJ. Ignorado quando `buyer_type === "PF"`. */
+export type PJRegime = "presumido" | "real";
+
 export type OpportunityInput = {
   buyer_type: BuyerType;
+  /** "presumido" (default — 6,5% sobre venda) ou "real"
+   *  (IRPJ+CSLL ~24% sobre lucro + PIS/COFINS ~9,25% sobre receita). */
+  pj_regime?: PJRegime;
   target_net_roi_pct: number;
   renovation_level: RenovationLevel;
   bid_amount: number;

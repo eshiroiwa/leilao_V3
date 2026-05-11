@@ -122,6 +122,9 @@ def compute_income_tax(
     gross_profit: float,
     pf_brackets: tuple[PFBracket, ...],
     pj_rate: float,
+    pj_regime: str = "presumido",
+    pj_real_income_rate: float = 0.24,
+    pj_real_revenue_rate: float = 0.0925,
 ) -> float:
     """Imposto de renda estimado sobre a venda.
 
@@ -129,12 +132,22 @@ def compute_income_tax(
       ``pf_brackets`` é uma tupla ordenada de ``(teto_da_faixa, alíquota)``
       e cada faixa contribui apenas com a PARCELA do ganho dentro dela.
       Prejuízo (gross_profit ≤ 0) não paga IR.
-    * PJ (Lucro Presumido — aproximação): alíquota sobre a receita de venda
-      (= ``pj_rate * sale_price``). Mesmo no prejuízo a PJ paga sobre o
-      faturamento — esse é o trade-off do regime presumido. O UI deve
-      sinalizar como **estimativa** para que o usuário consulte o contador.
+    * PJ Lucro Presumido (``pj_regime="presumido"``, default): alíquota
+      única sobre a receita de venda (= ``pj_rate * sale_price``). Mesmo
+      no prejuízo a PJ paga sobre o faturamento — trade-off do regime.
+    * PJ Lucro Real (``pj_regime="real"``): IRPJ+CSLL (``pj_real_income_rate``)
+      sobre o LUCRO (max(GP, 0)) + PIS/COFINS (``pj_real_revenue_rate``) sobre
+      a RECEITA (sem crédito — conservador). No prejuízo, IRPJ/CSLL=0 mas
+      PIS/COFINS ainda incidem sobre a venda.
+
+    Em todos os casos o UI deve sinalizar como **estimativa** para que o
+    usuário consulte o contador.
     """
     if buyer_type == "PJ":
+        if pj_regime == "real":
+            income_part = max(0.0, gross_profit) * pj_real_income_rate
+            revenue_part = max(0.0, sale_price) * pj_real_revenue_rate
+            return income_part + revenue_part
         return max(0.0, sale_price) * pj_rate
     gp = max(0.0, gross_profit)
     if gp <= 0 or not pf_brackets:
@@ -260,6 +273,9 @@ class MaxBidParams:
     pj_rate: float
     target_net_roi: float
     holding_costs: float = 0.0
+    pj_regime: str = "presumido"
+    pj_real_income_rate: float = 0.24
+    pj_real_revenue_rate: float = 0.0925
 
 
 def solve_max_bid(p: MaxBidParams) -> float | None:
@@ -323,6 +339,49 @@ def solve_max_bid(p: MaxBidParams) -> float | None:
 
     # ------------------------ PJ -------------------------------------------
     if p.buyer_type == "PJ":
+        if p.pj_regime == "real":
+            # Lucro Real — duas hipóteses dependendo do sinal de GP:
+            # H1: GP ≥ 0 → T = pj_rev · S + pj_inc · GP
+            # H2: GP < 0 → T = pj_rev · S (IRPJ/CSLL zerados)
+            pj_rev = p.pj_real_revenue_rate
+            pj_inc = p.pj_real_income_rate
+            candidates: list[float] = []
+
+            # Hipótese 1 (GP ≥ 0):
+            #   GP·(1−pj_inc) − pj_rev·S = target · A
+            #   ⇒ B(1+F)·((1−pj_inc) + target) = (S−R)(1−pj_inc) − K·((1−pj_inc)+target) − pj_rev·S
+            factor = (1.0 - pj_inc) + p.target_net_roi
+            if factor > 0:
+                denom_h1 = one_plus_F * factor
+                if denom_h1 > 0:
+                    numer_h1 = (
+                        (p.sale_price - R) * (1.0 - pj_inc)
+                        - K * factor
+                        - pj_rev * p.sale_price
+                    )
+                    bid_h1 = numer_h1 / denom_h1
+                    A_h1 = bid_h1 * one_plus_F + K
+                    GP_h1 = p.sale_price - A_h1 - R
+                    if bid_h1 > 0 and GP_h1 >= 0:
+                        candidates.append(bid_h1)
+
+            # Hipótese 2 (GP < 0):
+            #   GP = target · A → S − B(1+F) − K − R = target · (B(1+F) + K)
+            #   PIS/COFINS reduzem o "S efetivo" disponível: S' = S(1 − pj_rev)
+            denom_h2 = one_plus_F * one_plus_target
+            if denom_h2 > 0:
+                numer_h2 = (
+                    p.sale_price * (1.0 - pj_rev) - R - K * one_plus_target
+                )
+                bid_h2 = numer_h2 / denom_h2
+                A_h2 = bid_h2 * one_plus_F + K
+                GP_h2 = p.sale_price - A_h2 - R
+                if bid_h2 > 0 and GP_h2 < 0:
+                    candidates.append(bid_h2)
+
+            return max(candidates) if candidates else None
+
+        # Presumido (default): T constante = pj_rate · S
         T = p.sale_price * p.pj_rate
         numer = p.sale_price - R - T - K * one_plus_target
         denom = one_plus_F * one_plus_target

@@ -67,6 +67,10 @@ const IR_PF_BRACKETS: readonly PFBracket[] = [
 const IR_PF_PCT = IR_PF_BRACKETS[0][1];
 const IR_PJ_PCT = 0.065;
 
+// Lucro Real — estimativa simplificada conservadora (sem créditos de PIS/COFINS).
+const IR_PJ_REAL_INCOME_RATE = 0.24;
+const IR_PJ_REAL_REVENUE_RATE = 0.0925;
+
 function pfIncomeTaxProgressive(grossProfit: number): number {
   if (grossProfit <= 0) return 0;
   let tax = 0;
@@ -264,8 +268,17 @@ export function computeIncomeTax(
   buyerType: BuyerType,
   salePrice: number,
   grossProfit: number,
+  pjRegime: "presumido" | "real" = "presumido",
 ): number {
-  if (buyerType === "PJ") return Math.max(0, salePrice) * IR_PJ_PCT;
+  if (buyerType === "PJ") {
+    if (pjRegime === "real") {
+      return (
+        Math.max(0, grossProfit) * IR_PJ_REAL_INCOME_RATE
+        + Math.max(0, salePrice) * IR_PJ_REAL_REVENUE_RATE
+      );
+    }
+    return Math.max(0, salePrice) * IR_PJ_PCT;
+  }
   return pfIncomeTaxProgressive(grossProfit);
 }
 
@@ -292,12 +305,15 @@ function buildScenario(
     holdingMonths: number;
     monthlyIptu: number;
     monthlyCondo: number;
+    pjRegime: "presumido" | "real";
   },
 ): OpportunityScenario {
   const c = computeAcquisitionCosts(args);
   const realtorFee = salePrice * REALTOR_FEE_PCT;
   const grossProfitPreTax = salePrice - c.total - realtorFee;
-  const incomeTax = computeIncomeTax(args.buyerType, salePrice, grossProfitPreTax);
+  const incomeTax = computeIncomeTax(
+    args.buyerType, salePrice, grossProfitPreTax, args.pjRegime,
+  );
   const grossProfit = salePrice - c.total - realtorFee;
   const netProfit = grossProfit - incomeTax;
   const grossRoi = c.total > 0 ? grossProfit / c.total : 0;
@@ -353,6 +369,9 @@ export function solveMaxBid(p: {
   pjRate: number;
   targetNetRoi: number;
   holdingCosts?: number;
+  pjRegime?: "presumido" | "real";
+  pjRealIncomeRate?: number;
+  pjRealRevenueRate?: number;
 }): number | null {
   const F = p.auctioneerFeePct + p.itbiPct + p.registrationPct;
   const K =
@@ -367,6 +386,37 @@ export function solveMaxBid(p: {
   const onePlusTarget = 1 + p.targetNetRoi;
 
   if (p.buyerType === "PJ") {
+    if (p.pjRegime === "real") {
+      const pjRev = p.pjRealRevenueRate ?? IR_PJ_REAL_REVENUE_RATE;
+      const pjInc = p.pjRealIncomeRate ?? IR_PJ_REAL_INCOME_RATE;
+      const candidates: number[] = [];
+      // H1: GP ≥ 0
+      const factor = (1 - pjInc) + p.targetNetRoi;
+      if (factor > 0) {
+        const denomH1 = onePlusF * factor;
+        if (denomH1 > 0) {
+          const numerH1 =
+            (p.salePrice - R) * (1 - pjInc)
+            - K * factor
+            - pjRev * p.salePrice;
+          const b = numerH1 / denomH1;
+          const A = b * onePlusF + K;
+          const GP = p.salePrice - A - R;
+          if (b > 0 && GP >= 0) candidates.push(b);
+        }
+      }
+      // H2: GP < 0
+      const denomH2 = onePlusF * onePlusTarget;
+      if (denomH2 > 0) {
+        const numerH2 =
+          p.salePrice * (1 - pjRev) - R - K * onePlusTarget;
+        const b = numerH2 / denomH2;
+        const A = b * onePlusF + K;
+        const GP = p.salePrice - A - R;
+        if (b > 0 && GP < 0) candidates.push(b);
+      }
+      return candidates.length > 0 ? Math.max(...candidates) : null;
+    }
     const T = p.salePrice * p.pjRate;
     const numer = p.salePrice - R - T - K * onePlusTarget;
     const denom = onePlusF * onePlusTarget;
@@ -701,6 +751,7 @@ export function runAnalysisLocal(args: {
   const holdingMonths = input.holding_months ?? 12;
   const monthlyIptu = input.monthly_iptu ?? 0;
   const monthlyCondo = input.monthly_condo ?? 0;
+  const pjRegime = input.pj_regime ?? "presumido";
   const common = {
     bid: input.bid_amount,
     auctioneerFeePct,
@@ -714,6 +765,7 @@ export function runAnalysisLocal(args: {
     holdingMonths,
     monthlyIptu,
     monthlyCondo,
+    pjRegime,
   };
 
   const pessimista = buildScenario("pessimista", pessP, common);
@@ -736,6 +788,7 @@ export function runAnalysisLocal(args: {
     pjRate: IR_PJ_PCT,
     targetNetRoi: input.target_net_roi_pct,
     holdingCosts: holdingMonths * (monthlyIptu + monthlyCondo),
+    pjRegime,
   });
   const maxBid = maxBidRaw != null ? round2(maxBidRaw) : null;
 

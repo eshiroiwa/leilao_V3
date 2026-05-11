@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.opportunity.assumptions import (
     BuyerType,
+    PJRegime,
     RenovationLevel,
     VerdictType,
 )
@@ -36,6 +37,14 @@ class AnalysisInput(BaseModel):
 
     buyer_type: BuyerType = Field(
         default="PF", description="PF (pessoa física) ou PJ (pessoa jurídica)."
+    )
+    pj_regime: PJRegime = Field(
+        default="presumido",
+        description=(
+            "Regime tributário PJ: 'presumido' (default — 6,5% sobre venda)"
+            " ou 'real' (IRPJ+CSLL ~24% sobre lucro + PIS/COFINS ~9,25% sobre"
+            " receita). Ignorado quando ``buyer_type=PF``."
+        ),
     )
     target_net_roi_pct: Annotated[float, Field(ge=0, le=2.0)] = Field(
         default=0.40,
