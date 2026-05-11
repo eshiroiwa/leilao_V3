@@ -4,15 +4,16 @@ Mantemos as regras AQUI (e não no service) para que sejam fáceis de
 entender e ajustar. Tudo é configurável via constantes no topo.
 
 Fluxo:
-    1. ROI realista define um *base verdict* (BOA_OPORTUNIDADE/.../INVIAVEL).
+    1. ROI realista (ANUALIZADO) define um *base verdict*.
     2. Cada fator de risco aplica um *downgrade* (1 nível abaixo).
-    3. PISO: o ROI realista também limita o quão baixo o verdict pode cair —
-       um imóvel com ROI 50% nunca vira "INVIAVEL" só por warnings.
+    3. PISO: o mesmo ROI também limita o quão baixo o verdict pode cair —
+       um imóvel com ROI anualizado 50% nunca vira "INVIAVEL" só por warnings.
 
-Esse piso é deliberado: a UX antiga acumulava downgrades sem teto, o que
-gerava "ROI 50% mas verdict NEUTRO", confundindo o usuário. Hoje qualquer
-warning aparece na lista (transparência total), mas o verdict só rebaixa
-dentro de um intervalo razoável dado o ROI base.
+Por que o ROI **anualizado**: um "50% bruto" em 6 meses (≈ 125% a.a.) é
+incomparável com "50% bruto" em 60 meses (≈ 8,4% a.a.). O verdict precisa
+operar numa base comparável; CDI/Selic só fazem sentido na base anual.
+Quando ``holding_months = 12`` (default), o annualized = bruto, então o
+comportamento histórico é preservado para a UX padrão.
 """
 
 from __future__ import annotations
@@ -65,8 +66,8 @@ def _downgrade(v: VerdictType) -> VerdictType:
     return _VERDICT_CHAIN[min(idx + 1, len(_VERDICT_CHAIN) - 1)]
 
 
-def _floor_for_roi(realista_net_roi_pct: float) -> VerdictType:
-    """Verdict mínimo permitido dado o ROI realista — o "piso".
+def _floor_for_roi(roi_for_verdict_pct: float) -> VerdictType:
+    """Verdict mínimo permitido dado o ROI usado na classificação — o "piso".
 
     A regra é "ROI alto é difícil de invalidar":
 
@@ -75,11 +76,11 @@ def _floor_for_roi(realista_net_roi_pct: float) -> VerdictType:
       * ≥ 20% → piso = NEUTRO.
       * < 20% → sem piso (pode chegar a INVIAVEL).
     """
-    if realista_net_roi_pct >= ROI_EXCELLENT_THRESHOLD:
+    if roi_for_verdict_pct >= ROI_EXCELLENT_THRESHOLD:
         return "BOA_OPORTUNIDADE"
-    if realista_net_roi_pct >= ROI_GREAT_THRESHOLD:
+    if roi_for_verdict_pct >= ROI_GREAT_THRESHOLD:
         return "BOA_COM_RESSALVAS"
-    if realista_net_roi_pct >= ROI_OK_THRESHOLD:
+    if roi_for_verdict_pct >= ROI_OK_THRESHOLD:
         return "NEUTRO"
     return "INVIAVEL"
 
@@ -204,25 +205,30 @@ class VerdictDecision:
 
 def classify_verdict(
     *,
-    realista_net_roi_pct: float,
+    roi_for_verdict_pct: float,
     pessimista_net_profit: float,
     has_critical_warnings: bool,
 ) -> VerdictDecision:
-    """Combina ROI realista + sinais de alerta para um parecer único.
+    """Combina ROI (anualizado, do cenário realista) + alertas em um parecer.
 
     Estratégia (mais permissiva que a anterior):
-      1. ROI realista define o ``base_verdict`` E um piso.
+      1. ROI define o ``base_verdict`` E um piso.
       2. Para cada fator de risco aplicamos um downgrade (1 nível).
       3. O resultado nunca cai abaixo do piso permitido pelo ROI:
-         um imóvel com ROI realista de 50% NUNCA vira INVIAVEL só porque
+         um imóvel com ROI anualizado de 50% NUNCA vira INVIAVEL só porque
          há um warning crítico — ele permanece "BOA_COM_RESSALVAS" no pior
          caso.
+
+    ``roi_for_verdict_pct`` deve ser o ROI **anualizado** do cenário
+    realista — é a métrica comparável entre holdings curtos e longos.
+    Para holding=12 meses (default da UI) coincide com o ROI bruto, então
+    o comportamento prévio é preservado nesse caso.
 
     Os fatores são retornados explicitamente para que o UI possa explicar
     "por que este parecer", e não só mostrar a label final.
     """
-    base = _classify_by_roi(realista_net_roi_pct)
-    floor = _floor_for_roi(realista_net_roi_pct)
+    base = _classify_by_roi(roi_for_verdict_pct)
+    floor = _floor_for_roi(roi_for_verdict_pct)
 
     factors: list[str] = []
     if pessimista_net_profit < 0:

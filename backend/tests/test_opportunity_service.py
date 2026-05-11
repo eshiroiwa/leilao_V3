@@ -56,6 +56,49 @@ def test_run_analysis_produces_three_scenarios_with_growing_sale_prices() -> Non
     assert result.realista.sale_price < result.otimista.sale_price
 
 
+def test_run_analysis_exposes_expected_metrics_and_prob_loss() -> None:
+    """E[ROI] ponderado 30/40/30 deve cair entre pessimista e otimista; prob_loss
+    é a soma das probabilidades dos cenários com lucro negativo."""
+    inp = AnalysisInput(bid_amount=200_000)
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(),
+        valuation=_valuation(),
+    )
+    assert result.expected_net_roi_pct is not None
+    assert result.expected_annualized_net_roi_pct is not None
+    assert result.prob_loss is not None
+    # E[ROI] tem que ficar entre o pior e o melhor cenário.
+    assert (
+        result.pessimista.net_roi_pct
+        <= result.expected_net_roi_pct
+        <= result.otimista.net_roi_pct
+    )
+    # E[annualized] coincide com E[net] quando holding_months=12 (default).
+    assert result.expected_annualized_net_roi_pct == pytest.approx(
+        result.expected_net_roi_pct, abs=1e-6
+    )
+    # Como o realista é positivo neste cenário, prob_loss ≤ 0,30 (peso pess).
+    assert 0.0 <= result.prob_loss <= 0.30
+
+
+def test_run_analysis_prob_loss_caps_at_one_when_all_negative() -> None:
+    """Lance proibitivamente alto → todos os cenários com prejuízo → prob_loss = 1."""
+    inp = AnalysisInput(
+        bid_amount=1_000_000,
+        target_net_roi_pct=0.40,
+        renovation_level="full",
+    )
+    result = run_analysis(
+        inp=inp,
+        property_row=_property_row(),
+        valuation=_valuation(price_low=300_000, mid=350_000, high=400_000),
+    )
+    assert result.prob_loss == pytest.approx(1.0)
+    assert result.expected_net_roi_pct is not None
+    assert result.expected_net_roi_pct < 0
+
+
 def test_run_analysis_max_bid_yields_target_roi_when_recomputed() -> None:
     """Round-trip: recalcular o cenário com `max_bid_for_target` deve dar
     aproximadamente o ROI alvo."""

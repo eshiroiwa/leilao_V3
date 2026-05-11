@@ -52,8 +52,33 @@ const AUCTIONEER_FEE_CAIXA = 0.0;
 const AUCTIONEER_FEE_NO_AUCTIONEER = 0.0;
 const SLUGS_NO_AUCTIONEER_FEE = new Set(["caixa", "caixa-leiloes"]);
 const REALTOR_FEE_PCT = 0.06;
-const IR_PF_PCT = 0.15;
+
+// IR PF — tabela PROGRESSIVA (Lei 13.259/2016). Brackets = [tetoBRL, alíquota].
+// Última faixa usa Infinity como teto. Mantém paridade com
+// `backend/app/agents/opportunity/assumptions.IR_PF_BRACKETS`.
+type PFBracket = readonly [number, number];
+const IR_PF_BRACKETS: readonly PFBracket[] = [
+  [5_000_000, 0.15],
+  [10_000_000, 0.175],
+  [30_000_000, 0.2],
+  [Number.POSITIVE_INFINITY, 0.225],
+];
+// Alíquota da 1ª faixa — referência para snapshot/UI. 99% dos lotes ficam aqui.
+const IR_PF_PCT = IR_PF_BRACKETS[0][1];
 const IR_PJ_PCT = 0.065;
+
+function pfIncomeTaxProgressive(grossProfit: number): number {
+  if (grossProfit <= 0) return 0;
+  let tax = 0;
+  let prev = 0;
+  for (const [limit, rate] of IR_PF_BRACKETS) {
+    if (grossProfit <= prev) break;
+    const taxable = Math.min(grossProfit, limit) - prev;
+    if (taxable > 0) tax += taxable * rate;
+    prev = limit;
+  }
+  return tax;
+}
 
 const RENOVATION_PER_M2: Record<RenovationLevel, number> = {
   none: 0,
@@ -200,11 +225,17 @@ export function computeAcquisitionCosts(args: {
   condoArrears: number;
   renovationCost: number;
   otherCosts: number;
+  monthlyIptu?: number;
+  monthlyCondo?: number;
+  holdingMonths?: number;
 }) {
   const { bid, auctioneerFeePct, itbiPct, registrationPct } = args;
   const auctioneerFee = bid * auctioneerFeePct;
   const itbi = bid * itbiPct;
   const registration = bid * registrationPct;
+  const holdingCosts =
+    Math.max(0, args.holdingMonths ?? 0) *
+    (Math.max(0, args.monthlyIptu ?? 0) + Math.max(0, args.monthlyCondo ?? 0));
   const total =
     bid +
     auctioneerFee +
@@ -213,7 +244,8 @@ export function computeAcquisitionCosts(args: {
     args.iptuArrears +
     args.condoArrears +
     args.renovationCost +
-    args.otherCosts;
+    args.otherCosts +
+    holdingCosts;
   return {
     bid,
     auctioneerFee,
@@ -223,6 +255,7 @@ export function computeAcquisitionCosts(args: {
     condoArrears: args.condoArrears,
     renovationCost: args.renovationCost,
     otherCosts: args.otherCosts,
+    holdingCosts,
     total,
   };
 }
@@ -233,7 +266,14 @@ export function computeIncomeTax(
   grossProfit: number,
 ): number {
   if (buyerType === "PJ") return Math.max(0, salePrice) * IR_PJ_PCT;
-  return Math.max(0, grossProfit) * IR_PF_PCT;
+  return pfIncomeTaxProgressive(grossProfit);
+}
+
+export function annualizeRoi(netRoi: number, holdingMonths: number): number {
+  if (holdingMonths <= 0) return netRoi;
+  const base = 1 + netRoi;
+  if (base <= 1e-9) return -1;
+  return Math.pow(base, 12 / holdingMonths) - 1;
 }
 
 function buildScenario(
@@ -249,6 +289,9 @@ function buildScenario(
     renovationCost: number;
     otherCosts: number;
     buyerType: BuyerType;
+    holdingMonths: number;
+    monthlyIptu: number;
+    monthlyCondo: number;
   },
 ): OpportunityScenario {
   const c = computeAcquisitionCosts(args);
@@ -259,6 +302,7 @@ function buildScenario(
   const netProfit = grossProfit - incomeTax;
   const grossRoi = c.total > 0 ? grossProfit / c.total : 0;
   const netRoi = c.total > 0 ? netProfit / c.total : 0;
+  const annualizedNetRoi = annualizeRoi(netRoi, args.holdingMonths);
 
   return {
     label,
@@ -271,6 +315,7 @@ function buildScenario(
     condo_arrears: round2(c.condoArrears),
     renovation_cost: round2(c.renovationCost),
     other_costs: round2(c.otherCosts),
+    holding_costs: round2(c.holdingCosts),
     total_acquisition_cost: round2(c.total),
     realtor_fee: round2(realtorFee),
     gross_profit: round2(grossProfit),
@@ -278,6 +323,7 @@ function buildScenario(
     net_profit: round2(netProfit),
     gross_roi_pct: round6(grossRoi),
     net_roi_pct: round6(netRoi),
+    annualized_net_roi_pct: round6(annualizedNetRoi),
   };
 }
 
@@ -303,13 +349,18 @@ export function solveMaxBid(p: {
   registrationPct: number;
   realtorFeePct: number;
   buyerType: BuyerType;
-  pfRate: number;
+  pfBrackets: readonly PFBracket[];
   pjRate: number;
   targetNetRoi: number;
+  holdingCosts?: number;
 }): number | null {
   const F = p.auctioneerFeePct + p.itbiPct + p.registrationPct;
   const K =
-    p.iptuArrears + p.condoArrears + p.renovationCost + p.otherCosts;
+    p.iptuArrears +
+    p.condoArrears +
+    p.renovationCost +
+    p.otherCosts +
+    (p.holdingCosts ?? 0);
   const R = p.salePrice * p.realtorFeePct;
   const onePlusF = 1 + F;
   if (onePlusF <= 0) return null;
@@ -324,31 +375,44 @@ export function solveMaxBid(p: {
     return b > 0 ? b : null;
   }
 
-  const pf = p.pfRate;
-  const factor = (1 - pf) + p.targetNetRoi;
-
-  // Hipótese 1: GP ≥ 0
-  if (factor > 0) {
-    const numer = (p.salePrice - R) * (1 - pf) - K * factor;
-    const denom = onePlusF * factor;
-    if (denom > 0) {
-      const b = numer / denom;
-      const A = b * onePlusF + K;
-      const GP = p.salePrice - A - R;
-      if (b > 0 && GP >= 0) return b;
+  // PF — tabela progressiva. Para cada faixa, resolve algebricamente
+  // supondo que GP cai nela; valida e mantém os candidatos válidos.
+  const candidates: number[] = [];
+  let prevLimit = 0;
+  let cumulativeTax = 0;
+  for (const [limit, pf] of p.pfBrackets) {
+    const factor = (1 - pf) + p.targetNetRoi;
+    if (factor > 0) {
+      const denom = onePlusF * factor;
+      if (denom > 0) {
+        const numer =
+          (p.salePrice - R) * (1 - pf)
+          - K * factor
+          + pf * prevLimit
+          - cumulativeTax;
+        const b = numer / denom;
+        const A = b * onePlusF + K;
+        const GP = p.salePrice - A - R;
+        if (b > 0 && prevLimit <= GP && GP < limit) candidates.push(b);
+      }
     }
+    if (!Number.isFinite(limit)) break;
+    cumulativeTax += (limit - prevLimit) * pf;
+    prevLimit = limit;
   }
 
-  // Hipótese 2: GP < 0 (T = 0)
+  // Hipótese final: GP < 0 → T = 0.
   const numer = p.salePrice - R - K * onePlusTarget;
   const denom = onePlusF * onePlusTarget;
   if (denom > 0) {
     const b = numer / denom;
     const A = b * onePlusF + K;
     const GP = p.salePrice - A - R;
-    if (b > 0 && GP < 0) return b;
+    if (b > 0 && GP < 0) candidates.push(b);
   }
-  return null;
+
+  if (candidates.length === 0) return null;
+  return Math.max(...candidates);
 }
 
 // =============================================================================
@@ -634,6 +698,9 @@ export function runAnalysisLocal(args: {
     }
   }
 
+  const holdingMonths = input.holding_months ?? 12;
+  const monthlyIptu = input.monthly_iptu ?? 0;
+  const monthlyCondo = input.monthly_condo ?? 0;
   const common = {
     bid: input.bid_amount,
     auctioneerFeePct,
@@ -644,6 +711,9 @@ export function runAnalysisLocal(args: {
     renovationCost,
     otherCosts,
     buyerType: input.buyer_type,
+    holdingMonths,
+    monthlyIptu,
+    monthlyCondo,
   };
 
   const pessimista = buildScenario("pessimista", pessP, common);
@@ -662,9 +732,10 @@ export function runAnalysisLocal(args: {
     registrationPct,
     realtorFeePct: REALTOR_FEE_PCT,
     buyerType: input.buyer_type,
-    pfRate: IR_PF_PCT,
+    pfBrackets: IR_PF_BRACKETS,
     pjRate: IR_PJ_PCT,
     targetNetRoi: input.target_net_roi_pct,
+    holdingCosts: holdingMonths * (monthlyIptu + monthlyCondo),
   });
   const maxBid = maxBidRaw != null ? round2(maxBidRaw) : null;
 
@@ -683,7 +754,9 @@ export function runAnalysisLocal(args: {
     renovationAreaAvailable: renovationAreaM2 != null && renovationAreaM2 > 0,
   });
   const decision = classifyVerdict({
-    realistaNetRoi: realista.net_roi_pct,
+    // Anualizado: para holding=12 (default) coincide com net_roi_pct;
+    // para holdings longos corrige a ilusão de "ROI bom" temporal.
+    realistaNetRoi: realista.annualized_net_roi_pct,
     pessimistaNetProfit: pessimista.net_profit,
     hasCritical: hasCriticalWarnings(warnings),
   });
@@ -701,11 +774,32 @@ export function runAnalysisLocal(args: {
     renovation_per_m2: RENOVATION_PER_M2[input.renovation_level],
   };
 
+  // Métricas probabilísticas: pesos 30/40/30 (pess/real/oti).
+  // Espelha backend/app/agents/opportunity/assumptions.SCENARIO_PROB_*.
+  const pPess = 0.30;
+  const pReal = 0.40;
+  const pOti = 0.30;
+  const expectedNetRoi =
+    pPess * pessimista.net_roi_pct +
+    pReal * realista.net_roi_pct +
+    pOti * otimista.net_roi_pct;
+  const expectedAnnualized =
+    pPess * pessimista.annualized_net_roi_pct +
+    pReal * realista.annualized_net_roi_pct +
+    pOti * otimista.annualized_net_roi_pct;
+  const probLoss =
+    (pessimista.net_profit < 0 ? pPess : 0) +
+    (realista.net_profit < 0 ? pReal : 0) +
+    (otimista.net_profit < 0 ? pOti : 0);
+
   return {
     input,
     pessimista,
     realista,
     otimista,
+    expected_net_roi_pct: round6(expectedNetRoi),
+    expected_annualized_net_roi_pct: round6(expectedAnnualized),
+    prob_loss: Math.round(probLoss * 10_000) / 10_000,
     max_bid_for_target: maxBid,
     verdict: decision.verdict,
     verdict_base: decision.base,

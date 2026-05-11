@@ -14,7 +14,7 @@ from app.agents.opportunity.verdict import (
 # =============================================================================
 def test_classify_great_when_high_roi() -> None:
     d = classify_verdict(
-        realista_net_roi_pct=0.50,
+        roi_for_verdict_pct=0.50,
         pessimista_net_profit=10_000,
         has_critical_warnings=False,
     )
@@ -25,7 +25,7 @@ def test_classify_great_when_high_roi() -> None:
 
 def test_classify_neutral_when_low_roi() -> None:
     d = classify_verdict(
-        realista_net_roi_pct=0.10,
+        roi_for_verdict_pct=0.10,
         pessimista_net_profit=1_000,
         has_critical_warnings=False,
     )
@@ -34,7 +34,7 @@ def test_classify_neutral_when_low_roi() -> None:
 
 def test_classify_inviable_when_loss() -> None:
     d = classify_verdict(
-        realista_net_roi_pct=0.01,
+        roi_for_verdict_pct=0.01,
         pessimista_net_profit=-10_000,
         has_critical_warnings=False,
     )
@@ -48,7 +48,7 @@ def test_pessimista_loss_downgrades_verdict_at_great_roi() -> None:
     "BOA_COM_RESSALVAS" — então o pessimista deficitário rebaixa.
     """
     d = classify_verdict(
-        realista_net_roi_pct=0.45,
+        roi_for_verdict_pct=0.45,
         pessimista_net_profit=-5_000,
         has_critical_warnings=False,
     )
@@ -59,7 +59,7 @@ def test_pessimista_loss_downgrades_verdict_at_great_roi() -> None:
 
 def test_critical_warnings_downgrade_at_great_roi() -> None:
     d = classify_verdict(
-        realista_net_roi_pct=0.45,
+        roi_for_verdict_pct=0.45,
         pessimista_net_profit=10_000,
         has_critical_warnings=True,
     )
@@ -74,7 +74,7 @@ def test_excellent_roi_is_intocable() -> None:
     """ROI ≥ 50% mantém BOA_OPORTUNIDADE mesmo com pessimista negativo +
     warnings críticos — retorno tão alto compensa as fricções."""
     d = classify_verdict(
-        realista_net_roi_pct=0.55,
+        roi_for_verdict_pct=0.55,
         pessimista_net_profit=-10_000,
         has_critical_warnings=True,
     )
@@ -86,7 +86,7 @@ def test_excellent_roi_is_intocable() -> None:
 def test_excellent_roi_above_100_pct_stays_great() -> None:
     """Sanity: ROI 120% NUNCA pode virar BOA_COM_RESSALVAS por causa de warnings."""
     d = classify_verdict(
-        realista_net_roi_pct=1.20,
+        roi_for_verdict_pct=1.20,
         pessimista_net_profit=-50_000,
         has_critical_warnings=True,
     )
@@ -96,7 +96,7 @@ def test_excellent_roi_above_100_pct_stays_great() -> None:
 def test_great_roi_floor_is_boa_com_ressalvas() -> None:
     """ROI 40–50% pode cair até BOA_COM_RESSALVAS, mas não abaixo."""
     d = classify_verdict(
-        realista_net_roi_pct=0.45,
+        roi_for_verdict_pct=0.45,
         pessimista_net_profit=-10_000,
         has_critical_warnings=True,
     )
@@ -108,7 +108,7 @@ def test_medium_roi_floor_is_neutral() -> None:
     """ROI 25% (BOA_COM_RESSALVAS base) com 2 downgrades não vira INVIAVEL —
     o piso é NEUTRO."""
     d = classify_verdict(
-        realista_net_roi_pct=0.25,
+        roi_for_verdict_pct=0.25,
         pessimista_net_profit=-10_000,
         has_critical_warnings=True,
     )
@@ -119,11 +119,27 @@ def test_medium_roi_floor_is_neutral() -> None:
 def test_low_roi_can_still_become_inviable() -> None:
     """ROI baixo + downgrades pode chegar em INVIAVEL — sem piso protetor."""
     d = classify_verdict(
-        realista_net_roi_pct=0.06,
+        roi_for_verdict_pct=0.06,
         pessimista_net_profit=-10_000,
         has_critical_warnings=True,
     )
     assert d.verdict == "INVIAVEL"
+
+
+def test_long_holding_compressed_roi_loses_excellent_floor() -> None:
+    """Cenário-chave da anualização: ROI bruto 50% em 60 meses é apenas 8,4%
+    a.a. — o caller deve passar o ANUALIZADO, e o verdict corretamente cai
+    de "intocável" para NEUTRO (sem o piso BOA_OPORTUNIDADE que a versão
+    antiga aplicava em ROI bruto)."""
+    annualized = (1.5) ** (12 / 60) - 1  # ~0.0845
+    d = classify_verdict(
+        roi_for_verdict_pct=annualized,
+        pessimista_net_profit=10_000,
+        has_critical_warnings=False,
+    )
+    # 8,4% cai na faixa NEUTRO (5%-20%), longe de BOA_OPORTUNIDADE.
+    assert d.verdict == "NEUTRO"
+    assert d.base_verdict == "NEUTRO"
 
 
 # =============================================================================
@@ -233,7 +249,7 @@ def test_occupied_alone_does_not_downgrade_great_roi() -> None:
         itbi_source="city_table",
     )
     d = classify_verdict(
-        realista_net_roi_pct=0.50,
+        roi_for_verdict_pct=0.50,
         pessimista_net_profit=10_000,
         has_critical_warnings=has_critical_warnings(occupied_warnings),
     )

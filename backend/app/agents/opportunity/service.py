@@ -117,8 +117,11 @@ def _build_scenario(
     other_costs: float,
     realtor_fee_pct: float,
     buyer_type: str,
-    pf_rate: float,
+    pf_brackets: tuple[tuple[float, float], ...],
     pj_rate: float,
+    holding_months: int = 12,
+    monthly_iptu: float = 0.0,
+    monthly_condo: float = 0.0,
 ) -> Scenario:
     costs = compute_acquisition_costs(
         bid=bid,
@@ -129,6 +132,9 @@ def _build_scenario(
         condo_arrears=condo_arrears,
         renovation_cost=renovation_cost,
         other_costs=other_costs,
+        monthly_iptu=monthly_iptu,
+        monthly_condo=monthly_condo,
+        holding_months=holding_months,
     )
 
     realtor_fee = sale_price * realtor_fee_pct
@@ -137,7 +143,7 @@ def _build_scenario(
         buyer_type=buyer_type,
         sale_price=sale_price,
         gross_profit=gp_pre_tax,
-        pf_rate=pf_rate,
+        pf_brackets=pf_brackets,
         pj_rate=pj_rate,
     )
     pb = compute_profit_and_roi(
@@ -145,6 +151,7 @@ def _build_scenario(
         acquisition_cost_total=costs.total,
         realtor_fee_pct=realtor_fee_pct,
         income_tax=income_tax,
+        holding_months=holding_months,
     )
 
     return Scenario(
@@ -158,6 +165,7 @@ def _build_scenario(
         condo_arrears=round(costs.condo_arrears, 2),
         renovation_cost=round(costs.renovation_cost, 2),
         other_costs=round(costs.other_costs, 2),
+        holding_costs=round(costs.holding_costs, 2),
         total_acquisition_cost=round(costs.total, 2),
         realtor_fee=round(pb.realtor_fee, 2),
         gross_profit=round(pb.gross_profit, 2),
@@ -165,6 +173,7 @@ def _build_scenario(
         net_profit=round(pb.net_profit, 2),
         gross_roi_pct=round(pb.gross_roi_pct, 6),
         net_roi_pct=round(pb.net_roi_pct, 6),
+        annualized_net_roi_pct=round(pb.annualized_net_roi_pct, 6),
     )
 
 
@@ -303,8 +312,11 @@ def run_analysis(
         other_costs=other_costs,
         realtor_fee_pct=A.REALTOR_FEE_PCT,
         buyer_type=inp.buyer_type,
-        pf_rate=A.IR_PF_PCT,
+        pf_brackets=A.IR_PF_BRACKETS,
         pj_rate=A.IR_PJ_PCT,
+        holding_months=inp.holding_months,
+        monthly_iptu=float(inp.monthly_iptu),
+        monthly_condo=float(inp.monthly_condo),
     )
 
     pessimista = _build_scenario(label="pessimista", sale_price=pess_p, **common_kwargs)
@@ -312,6 +324,9 @@ def run_analysis(
     otimista = _build_scenario(label="otimista", sale_price=oti_p, **common_kwargs)
 
     # --- 5. Lance máximo (sobre cenário REALISTA) ---------------------
+    holding_costs = float(inp.holding_months) * (
+        float(inp.monthly_iptu) + float(inp.monthly_condo)
+    )
     max_bid = solve_max_bid(
         MaxBidParams(
             sale_price=real_p,
@@ -324,9 +339,10 @@ def run_analysis(
             registration_pct=registration_pct,
             realtor_fee_pct=A.REALTOR_FEE_PCT,
             buyer_type=inp.buyer_type,
-            pf_rate=A.IR_PF_PCT,
+            pf_brackets=A.IR_PF_BRACKETS,
             pj_rate=A.IR_PJ_PCT,
             target_net_roi=inp.target_net_roi_pct,
+            holding_costs=holding_costs,
         )
     )
     if max_bid is not None:
@@ -348,7 +364,7 @@ def run_analysis(
     )
 
     decision = classify_verdict(
-        realista_net_roi_pct=realista.net_roi_pct,
+        roi_for_verdict_pct=realista.annualized_net_roi_pct,
         pessimista_net_profit=pessimista.net_profit,
         has_critical_warnings=has_critical_warnings(warnings),
     )
@@ -366,11 +382,38 @@ def run_analysis(
         renovation_per_m2=A.RENOVATION_PER_M2[inp.renovation_level],
     )
 
+    # --- 8. Métricas probabilísticas (combinação ponderada dos cenários) ---
+    p_pess = A.SCENARIO_PROB_PESSIMISTA
+    p_real = A.SCENARIO_PROB_REALISTA
+    p_oti = A.SCENARIO_PROB_OTIMISTA
+    expected_net_roi = (
+        p_pess * pessimista.net_roi_pct
+        + p_real * realista.net_roi_pct
+        + p_oti * otimista.net_roi_pct
+    )
+    expected_annualized = (
+        p_pess * pessimista.annualized_net_roi_pct
+        + p_real * realista.annualized_net_roi_pct
+        + p_oti * otimista.annualized_net_roi_pct
+    )
+    prob_loss = sum(
+        p
+        for p, sc in (
+            (p_pess, pessimista),
+            (p_real, realista),
+            (p_oti, otimista),
+        )
+        if sc.net_profit < 0
+    )
+
     return AnalysisResult(
         input=inp,
         pessimista=pessimista,
         realista=realista,
         otimista=otimista,
+        expected_net_roi_pct=round(expected_net_roi, 6),
+        expected_annualized_net_roi_pct=round(expected_annualized, 6),
+        prob_loss=round(prob_loss, 4),
         max_bid_for_target=max_bid,
         verdict=decision.verdict,
         verdict_base=decision.base_verdict,

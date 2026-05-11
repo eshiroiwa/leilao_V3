@@ -168,6 +168,14 @@ export type OpportunityInput = {
   other_costs: number;
   iptu_arrears: number;
   condo_arrears: number;
+  /** Horizonte planejado de carregamento até a venda (meses).
+   *  Default 12 — mantém comportamento histórico (annualized == bruto). */
+  holding_months?: number;
+  /** IPTU mensal CORRENTE (parcela/12). Junto com `monthly_condo` ×
+   *  `holding_months` compõe o custo de carregamento adicional. Default 0. */
+  monthly_iptu?: number;
+  /** Condomínio mensal CORRENTE. Default 0. */
+  monthly_condo?: number;
   itbi_pct_override?: number | null;
   registration_pct_override?: number | null;
   auctioneer_fee_pct_override?: number | null;
@@ -185,6 +193,9 @@ export type OpportunityScenario = {
   condo_arrears: number;
   renovation_cost: number;
   other_costs: number;
+  /** (monthly_iptu + monthly_condo) × holding_months. Default 0 quando o
+   *  input não preenche os campos correspondentes. */
+  holding_costs?: number;
   total_acquisition_cost: number;
   realtor_fee: number;
   gross_profit: number;
@@ -192,6 +203,8 @@ export type OpportunityScenario = {
   net_profit: number;
   gross_roi_pct: number;
   net_roi_pct: number;
+  /** ROI líquido anualizado: (1+net_roi)^(12/holding_months) - 1. */
+  annualized_net_roi_pct: number;
 };
 
 export type OpportunityAssumptions = {
@@ -216,6 +229,12 @@ export type OpportunityResult = {
   pessimista: OpportunityScenario;
   realista: OpportunityScenario;
   otimista: OpportunityScenario;
+  /** E[ROI net] ponderado 30/40/30 (pess/real/oti). Embrião do Monte Carlo. */
+  expected_net_roi_pct?: number | null;
+  /** E[ROI net anualizado] ponderado — comparável diretamente com CDI. */
+  expected_annualized_net_roi_pct?: number | null;
+  /** P[ROI<0] aproximada: soma das probabilidades dos cenários deficitários. */
+  prob_loss?: number | null;
   max_bid_for_target: number | null;
   verdict: Verdict;
   /** Verdict APENAS pelo ROI realista (antes dos downgrades). */

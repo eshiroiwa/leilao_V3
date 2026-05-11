@@ -65,6 +65,31 @@ class AnalysisInput(BaseModel):
     condo_arrears: Annotated[float, Field(ge=0)] = Field(
         default=0.0, description="Condomínio em atraso (BRL)."
     )
+    holding_months: Annotated[int, Field(ge=1, le=120)] = Field(
+        default=12,
+        description=(
+            "Horizonte planejado de carregamento até a venda, em meses."
+            " Usado para anualizar o ROI: holding=12 deixa o annualized"
+            " idêntico ao ROI bruto; holding mais longo descobre custo"
+            " temporal (e.g. 50% bruto em 24 meses ≈ 22,5% anualizado)."
+        ),
+    )
+    monthly_iptu: Annotated[float, Field(ge=0)] = Field(
+        default=0.0,
+        description=(
+            "IPTU mensal CORRENTE (parcela/12), em BRL. Junto com"
+            " ``monthly_condo`` × ``holding_months`` compõe o custo de"
+            " carregamento somado ao custo de aquisição (default 0 mantém"
+            " comportamento histórico do balisador)."
+        ),
+    )
+    monthly_condo: Annotated[float, Field(ge=0)] = Field(
+        default=0.0,
+        description=(
+            "Condomínio mensal CORRENTE, em BRL. Custo de carregamento"
+            " enquanto o imóvel não é revendido."
+        ),
+    )
 
     # Override opcionais (raros, mas úteis para casos onde o usuário sabe
     # mais que a tabela — ex.: ITBI numa cidade fora da whitelist).
@@ -116,6 +141,9 @@ class Scenario(BaseModel):
     condo_arrears: float
     renovation_cost: float
     other_costs: float
+    # Custo de carregamento: (monthly_iptu + monthly_condo) × holding_months.
+    # Default 0 quando o usuário não preenche os campos correspondentes.
+    holding_costs: float = 0.0
     total_acquisition_cost: float  # = soma dos itens acima
 
     # Custo de venda
@@ -129,6 +157,10 @@ class Scenario(BaseModel):
     # ROI
     gross_roi_pct: float  # lucro_bruto / total_acquisition_cost
     net_roi_pct: float    # lucro_liquido / total_acquisition_cost
+    # ROI ANUALIZADO líquido — net_roi convertido para base anual via
+    # (1 + net_roi)^(12/holding_months) − 1. Para holding_months = 12
+    # coincide com net_roi_pct.
+    annualized_net_roi_pct: float
 
 
 # =============================================================================
@@ -173,6 +205,35 @@ class AnalysisResult(BaseModel):
     pessimista: Scenario
     realista: Scenario
     otimista: Scenario
+
+    # =================================================================
+    # Métricas probabilísticas — combinação ponderada dos 3 cenários
+    # =================================================================
+    # Pesos default 30/40/30 (P10/P50/P90). Embrião do Monte Carlo da
+    # Fase 3 — quando a simulação real entrar, esses campos serão
+    # substituídos por médias amostrais e P[loss] virá de contagem direta.
+    expected_net_roi_pct: float | None = Field(
+        default=None,
+        description=(
+            "ROI líquido ESPERADO ponderado pelos 3 cenários (P10/P50/P90)."
+            " E[ROI] = 0,30·pessimista + 0,40·realista + 0,30·otimista."
+        ),
+    )
+    expected_annualized_net_roi_pct: float | None = Field(
+        default=None,
+        description=(
+            "ROI líquido ANUALIZADO esperado, ponderado pelos 3 cenários."
+            " Comparável diretamente com CDI/Selic do ano."
+        ),
+    )
+    prob_loss: float | None = Field(
+        default=None,
+        description=(
+            "Probabilidade APROXIMADA de prejuízo (NP < 0), em fração."
+            " Soma os pesos dos cenários cujo net_profit é negativo."
+            " Aproximação grosseira — será substituída por Monte Carlo."
+        ),
+    )
 
     # Lance máximo p/ atingir o ROI alvo (calculado sobre o cenário REALISTA)
     max_bid_for_target: float | None = Field(

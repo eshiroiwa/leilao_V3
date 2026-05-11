@@ -94,10 +94,29 @@ REALTOR_FEE_PCT: Final[float] = 0.06  # comissão de venda do imóvel
 # =============================================================================
 # 3. Imposto de Renda
 # =============================================================================
-# Pessoa Física — ganho de capital sobre operações imobiliárias.
-# Alíquota progressiva real: 15% até 5MM, 17.5% de 5–10MM, 20% de 10–30MM,
-# 22.5% acima. Usamos 15% como aproximação conservadora para o MVP.
-IR_PF_PCT: Final[float] = 0.15
+# Pessoa Física — ganho de capital sobre operações imobiliárias (Lei 13.259/2016).
+# Alíquota PROGRESSIVA por faixa sobre o ganho de capital (em BRL):
+#   * até R$ 5.000.000     → 15%
+#   * R$ 5MM a R$ 10MM     → 17,5%
+#   * R$ 10MM a R$ 30MM    → 20%
+#   * acima de R$ 30MM     → 22,5%
+#
+# Cada bracket = (teto_da_faixa_BRL, alíquota). Última faixa usa inf como teto.
+# Importante: progressivo = a alíquota maior só incide sobre a PARCELA do ganho
+# que excede o teto da faixa anterior (não sobre o ganho inteiro).
+PFBracket = tuple[float, float]
+IR_PF_BRACKETS: Final[tuple[PFBracket, ...]] = (
+    (5_000_000.0, 0.150),
+    (10_000_000.0, 0.175),
+    (30_000_000.0, 0.200),
+    (float("inf"), 0.225),
+)
+
+# Alíquota da PRIMEIRA faixa — usada como referência no snapshot/UI e como
+# fallback quando o consumidor precisa de "uma alíquota" representativa.
+# A maioria dos leilões cabe na primeira faixa (<R$5MM), então 15% é a
+# alíquota efetiva esperada em 99% dos casos.
+IR_PF_PCT: Final[float] = IR_PF_BRACKETS[0][1]
 
 # Pessoa Jurídica — Lucro Presumido (estimativa simplificada):
 #   IRPJ + CSLL + PIS + COFINS sobre venda de imóvel costuma somar ~6.73%
@@ -105,6 +124,36 @@ IR_PF_PCT: Final[float] = 0.15
 # Usamos 6.5% para o cliente entender que é uma estimativa. O UI deve
 # DEIXAR CLARO que é "estimativa simplificada — consulte seu contador".
 IR_PJ_PCT: Final[float] = 0.065
+
+
+def pf_income_tax_progressive(
+    gross_profit: float,
+    brackets: tuple[PFBracket, ...] = IR_PF_BRACKETS,
+) -> float:
+    """Imposto PF sobre ganho de capital aplicando a tabela PROGRESSIVA.
+
+    Para ``gross_profit <= 0`` devolve 0 (PF não paga IR sobre prejuízo).
+    Para ``gross_profit > 0``, soma a contribuição de cada faixa sobre a
+    parcela do ganho que cai dentro dela. Ex.: ganho de R$ 6MM resulta
+    em 5MM × 15% + 1MM × 17,5% = 925k (alíquota efetiva ≈ 15,42%), e
+    NÃO 6MM × 17,5% = 1,05M.
+
+    ``brackets`` deve estar ordenado por teto crescente. A última faixa
+    geralmente usa ``float("inf")`` como teto para capturar qualquer
+    excesso. Brackets vazios → imposto 0.
+    """
+    if gross_profit <= 0 or not brackets:
+        return 0.0
+    tax = 0.0
+    prev_limit = 0.0
+    for limit, rate in brackets:
+        if gross_profit <= prev_limit:
+            break
+        taxable_in_bracket = min(gross_profit, limit) - prev_limit
+        if taxable_in_bracket > 0:
+            tax += taxable_in_bracket * rate
+        prev_limit = limit
+    return tax
 
 
 # =============================================================================
@@ -133,6 +182,18 @@ OTHER_COSTS_DEFAULT: Final[dict[OccupancyKey, float]] = {
 # 6. ROI alvo padrão
 # =============================================================================
 DEFAULT_TARGET_NET_ROI: Final[float] = 0.40
+
+
+# =============================================================================
+# 7. Probabilidades dos 3 cenários (pessimista / realista / otimista)
+# =============================================================================
+# Pesos que defaultam a heurística "cauda P10 / centro P50 / cauda P90".
+# Soma exatamente 1,0. Quando o Monte Carlo da Fase 3 entrar, esses pesos
+# serão substituídos por amostragem real e essas constantes serão usadas
+# apenas como fallback de UI quando a simulação não estiver disponível.
+SCENARIO_PROB_PESSIMISTA: Final[float] = 0.30
+SCENARIO_PROB_REALISTA: Final[float] = 0.40
+SCENARIO_PROB_OTIMISTA: Final[float] = 0.30
 
 
 # =============================================================================

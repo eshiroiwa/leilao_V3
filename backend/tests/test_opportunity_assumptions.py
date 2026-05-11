@@ -232,6 +232,75 @@ def test_renovation_area_case_insensitive_and_unknown_type() -> None:
 
 
 # =============================================================================
+# pf_income_tax_progressive — tabela Lei 13.259/2016
+# =============================================================================
+def test_pf_progressive_zero_for_loss_or_zero() -> None:
+    """Prejuízo (ou GP=0) não paga IR PF."""
+    assert A.pf_income_tax_progressive(0) == 0.0
+    assert A.pf_income_tax_progressive(-100_000) == 0.0
+
+
+def test_pf_progressive_first_bracket_15pct() -> None:
+    """Ganho dentro da 1ª faixa (até R$5MM) → 15% liso."""
+    # Caso típico de leilão judicial: ganho de R$100k → R$15k.
+    assert A.pf_income_tax_progressive(100_000) == pytest.approx(15_000)
+    # Borda da faixa (R$5MM) → 5MM × 15% = 750k.
+    assert A.pf_income_tax_progressive(5_000_000) == pytest.approx(750_000)
+
+
+def test_pf_progressive_second_bracket_17_5pct_partial() -> None:
+    """Ganho de R$6MM → 5MM×15% + 1MM×17,5% = 750k + 175k = 925k.
+
+    NÃO é 6MM × 17,5% (= 1,05M) — esse seria o erro do escalonado.
+    A alíquota maior só incide sobre a PARCELA acima do teto anterior.
+    """
+    assert A.pf_income_tax_progressive(6_000_000) == pytest.approx(925_000)
+    # Borda: R$10MM → 750k + 5MM × 17,5% = 750k + 875k = 1.625k.
+    assert A.pf_income_tax_progressive(10_000_000) == pytest.approx(1_625_000)
+
+
+def test_pf_progressive_third_bracket_20pct_partial() -> None:
+    """Ganho de R$15MM → 750k + 875k + 5MM × 20% = 1.625k + 1.000k = 2.625k."""
+    assert A.pf_income_tax_progressive(15_000_000) == pytest.approx(2_625_000)
+
+
+def test_pf_progressive_top_bracket_22_5pct() -> None:
+    """Ganho de R$40MM → 1.625k + 20MM×20% + 10MM×22,5% = 1.625k+4.000k+2.250k = 7.875k."""
+    assert A.pf_income_tax_progressive(40_000_000) == pytest.approx(7_875_000)
+
+
+def test_pf_progressive_effective_rate_grows_with_gp() -> None:
+    """Alíquota efetiva é monotonicamente crescente em GP."""
+    rates = [
+        A.pf_income_tax_progressive(g) / g
+        for g in (1_000_000, 6_000_000, 15_000_000, 40_000_000)
+    ]
+    assert rates == sorted(rates)
+    # Sanidade: nunca passa de 22,5%, nunca cai abaixo de 15%.
+    assert 0.15 <= rates[0] <= rates[-1] < 0.225
+
+
+def test_pf_progressive_custom_brackets() -> None:
+    """Função aceita brackets customizados — útil para simulação de cenários
+    alternativos (ex.: regime futuro, isenção temporária)."""
+    flat_20 = ((float("inf"), 0.20),)
+    assert A.pf_income_tax_progressive(1_000_000, brackets=flat_20) == pytest.approx(
+        200_000
+    )
+    # Brackets vazios = imposto 0 (degeneração defensiva).
+    assert A.pf_income_tax_progressive(1_000_000, brackets=()) == 0.0
+
+
+def test_pf_default_bracket_table_matches_law() -> None:
+    """A tabela default expõe as 4 faixas da Lei 13.259/2016."""
+    assert len(A.IR_PF_BRACKETS) == 4
+    assert A.IR_PF_BRACKETS[0] == (5_000_000.0, 0.150)
+    assert A.IR_PF_BRACKETS[1] == (10_000_000.0, 0.175)
+    assert A.IR_PF_BRACKETS[2] == (30_000_000.0, 0.200)
+    assert A.IR_PF_BRACKETS[3] == (float("inf"), 0.225)
+
+
+# =============================================================================
 # other_costs_default_for
 # =============================================================================
 def test_other_costs_for_occupancy_levels() -> None:
