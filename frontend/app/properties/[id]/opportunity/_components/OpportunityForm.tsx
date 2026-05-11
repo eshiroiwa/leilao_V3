@@ -13,6 +13,7 @@ import type {
 import {
   REGISTRATION_PCT_DEFAULT,
   auctioneerFeePctFor,
+  effectiveRenovationAreaM2,
   itbiPctFor,
 } from "@/lib/opportunity-math";
 import { formatBRL, formatPct } from "@/lib/utils";
@@ -271,11 +272,7 @@ export function OpportunityForm({
               </option>
             ))}
           </select>
-          {property.area_total_m2 != null && (
-            <p className="text-[11px] text-muted-foreground">
-              Área considerada: {property.area_total_m2} m²
-            </p>
-          )}
+          <RenovationAreaHint property={property} />
         </div>
 
         {/* IPTU em atraso */}
@@ -479,6 +476,58 @@ export function OpportunityForm({
         </details>
       </CardContent>
     </Card>
+  );
+}
+
+// =============================================================================
+// RenovationAreaHint — mostra a ÁREA real que entra no cálculo da reforma
+// (espelha effective_renovation_area_m2 do backend: construída → útil →
+// total). Antes mostrávamos sempre area_total_m2, que para casas é o
+// TERRENO e levava a custos de reforma absurdos.
+// =============================================================================
+function RenovationAreaHint({ property }: { property: Property }) {
+  const used = effectiveRenovationAreaM2(property);
+
+  // Terreno/lote: efetivamente não há reforma — área construída inexiste.
+  const ptype = (property.property_type ?? "").trim().toLowerCase();
+  if (ptype === "terreno" || ptype === "lote") {
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        Imóvel é terreno — sem área construída para reforma (custo R$ 0).
+      </p>
+    );
+  }
+
+  if (used == null || used <= 0) {
+    return (
+      <p className="text-[11px] text-warning-700">
+        Sem área construída cadastrada — custo de reforma ficará R$ 0
+        independente do nível selecionado. Confira o edital.
+      </p>
+    );
+  }
+
+  // Identifica de qual campo a área veio (espelha a prioridade do helper).
+  const sourceLabel =
+    used === property.area_built_m2
+      ? "construída"
+      : used === property.area_total_m2
+        ? "total"
+        : "útil";
+
+  return (
+    <p className="text-[11px] text-muted-foreground">
+      Área considerada: <strong>{used} m²</strong>{" "}
+      <span className="text-[10px]">({sourceLabel})</span>
+      {property.area_total_m2 != null &&
+        property.area_built_m2 != null &&
+        property.area_built_m2 !== property.area_total_m2 && (
+          <span className="text-[10px]">
+            {" "}
+            · total {property.area_total_m2} m²
+          </span>
+        )}
+    </p>
   );
 }
 
