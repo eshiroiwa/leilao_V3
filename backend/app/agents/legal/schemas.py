@@ -25,7 +25,13 @@ class ProcessSummary(BaseModel):
 
 
 class OwnerProcessesResult(BaseModel):
-    """Saída do nó CHECK_PROCESSES (CNJ DataJud por CPF/CNPJ)."""
+    """Saída do nó CHECK_PROCESSES (CNJ DataJud por CPF/CNPJ).
+
+    ``tribunals_queried`` / ``tribunals_failed`` substituem o campo
+    singular ``tribunal`` em consultas multi-tribunais (TJ + TRT). O campo
+    ``tribunal`` é mantido como **principal** (primeiro consultado com
+    sucesso) por retrocompat com rows persistidas antes desta mudança.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -33,10 +39,12 @@ class OwnerProcessesResult(BaseModel):
     skipped_reason: str | None = None
     cpf_cnpj: str | None = None
     tribunal: str | None = None
+    tribunals_queried: list[str] = Field(default_factory=list)
+    tribunals_failed: list[str] = Field(default_factory=list)
     total_hits: int = 0
     critical_hits: int = 0
     critical_labels: list[str] = Field(default_factory=list)
-    sample_processes: list[ProcessSummary] = Field(default_factory=list, max_length=10)
+    sample_processes: list[ProcessSummary] = Field(default_factory=list, max_length=20)
 
 
 class MatriculaCheckResult(BaseModel):

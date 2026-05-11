@@ -23,31 +23,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type LegalCheckResult, type Property } from "@/lib/api";
+import {
+  digitsOnly,
+  maskCpfCnpj,
+  validateCpfCnpj,
+} from "@/lib/cpf-cnpj";
 import { cn } from "@/lib/utils";
-
-/** Mantém só dígitos para validar comprimento e enviar limpo ao backend. */
-function digitsOnly(s: string): string {
-  return s.replace(/\D/g, "");
-}
-
-/** Formata CPF (XXX.XXX.XXX-XX) ou CNPJ (XX.XXX.XXX/XXXX-XX) à medida que o
- *  usuário digita; preserva apenas dígitos para validação de comprimento. */
-function maskCpfCnpj(raw: string): string {
-  const d = digitsOnly(raw).slice(0, 14);
-  if (d.length <= 11) {
-    // CPF: 000.000.000-00
-    return d
-      .replace(/^(\d{3})(\d)/, "$1.$2")
-      .replace(/^(\d{3})\.(\d{3})(\d)/, "$1.$2.$3")
-      .replace(/\.(\d{3})(\d)/, ".$1-$2");
-  }
-  // CNPJ: 00.000.000/0000-00
-  return d
-    .replace(/^(\d{2})(\d)/, "$1.$2")
-    .replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2.$3")
-    .replace(/\.(\d{3})(\d)/, ".$1/$2")
-    .replace(/(\d{4})(\d)/, "$1-$2");
-}
 
 type LegalRow = LegalCheckResult & { id?: string | null };
 
@@ -85,18 +66,30 @@ export function LegalCheckCard({ property }: { property: Property }) {
   }, [property.id]);
 
   const digits = digitsOnly(cpfCnpj);
-  const isValid = digits.length === 11 || digits.length === 14;
-  const isEmpty = digits.length === 0;
+  const validation = validateCpfCnpj(cpfCnpj);
+  const isComplete =
+    validation.kind === "cpf" || validation.kind === "cnpj";
+  const dvValid = isComplete ? validation.dvValid : false;
+  const isEmpty = validation.kind === "empty";
   const isManualOverride = digits !== digitsOnly(scrapedCpfCnpj);
 
-  const runCheck = async () => {
+  const runCheck = async (force = false) => {
     if (isEmpty) {
       setError("Informe o CPF ou CNPJ do proprietário antes de verificar.");
       return;
     }
-    if (!isValid) {
+    if (!isComplete) {
       setError(
-        `Documento inválido (${digits.length} dígitos). Esperado 11 (CPF) ou 14 (CNPJ).`,
+        `Documento incompleto (${digits.length} dígito(s)). Esperado 11 (CPF) ou 14 (CNPJ).`,
+      );
+      return;
+    }
+    if (!dvValid && !force) {
+      // Dígito verificador inválido — vamos pedir confirmação antes de
+      // gastar uma chamada DataJud que vai retornar zero hits e dar
+      // falsa sensação de "imóvel limpo".
+      setError(
+        "DV_INVALID",
       );
       return;
     }
@@ -125,8 +118,8 @@ export function LegalCheckCard({ property }: { property: Property }) {
           <Button
             size="sm"
             variant="outline"
-            onClick={runCheck}
-            disabled={running || loading || isEmpty || !isValid}
+            onClick={() => runCheck(false)}
+            disabled={running || loading || isEmpty || !isComplete}
           >
             {running ? (
               <>
@@ -173,27 +166,68 @@ export function LegalCheckCard({ property }: { property: Property }) {
             autoComplete="off"
             placeholder="000.000.000-00 ou 00.000.000/0000-00"
             value={cpfCnpj}
-            onChange={(e) => setCpfCnpj(maskCpfCnpj(e.target.value))}
+            onChange={(e) => {
+              setCpfCnpj(maskCpfCnpj(e.target.value));
+              // Limpa erro de DV quando o usuário corrige o número.
+              if (error === "DV_INVALID") setError(null);
+            }}
             className={cn(
-              !isEmpty && !isValid && "border-warning/60 focus-visible:ring-warning",
+              !isEmpty &&
+                !isComplete &&
+                "border-warning/60 focus-visible:ring-warning",
+              isComplete &&
+                !dvValid &&
+                "border-danger/60 focus-visible:ring-danger",
             )}
           />
-          <p className="text-[10px] text-muted-foreground">
+          <p
+            className={cn(
+              "text-[10px]",
+              isComplete && !dvValid
+                ? "text-danger-700"
+                : "text-muted-foreground",
+            )}
+          >
             {isEmpty
-              ? "Preencha para consultar processos no CNJ DataJud."
-              : !isValid
+              ? "Preencha para consultar processos no CNJ DataJud (TJ + TRT da UF)."
+              : !isComplete
                 ? `${digits.length} dígito(s) — esperado 11 (CPF) ou 14 (CNPJ).`
-                : digits.length === 11
-                  ? "Será consultado como CPF no TJ da UF do imóvel."
-                  : "Será consultado como CNPJ no TJ da UF do imóvel."}
+                : !dvValid
+                  ? `Dígito verificador inválido — número provavelmente digitado errado. (${
+                      validation.kind === "cpf" ? "CPF" : "CNPJ"
+                    })`
+                  : validation.kind === "cpf"
+                    ? "CPF válido — consulta os tribunais da UF do imóvel."
+                    : "CNPJ válido — consulta os tribunais da UF do imóvel."}
           </p>
         </div>
 
-        {error && (
+        {error === "DV_INVALID" ? (
+          <div className="space-y-2 rounded-md border border-warning/40 bg-warning-50 p-2.5 text-xs text-warning-700">
+            <div className="font-semibold">
+              Dígito verificador não bate.
+            </div>
+            <div>
+              Esse número {validation.kind === "cpf" ? "CPF" : "CNPJ"} muito
+              provavelmente está digitado errado. Confira antes de prosseguir
+              — uma consulta com documento inválido devolve zero processos e
+              parece &quot;limpo&quot; sem ser.
+            </div>
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => runCheck(true)}
+                className="text-[11px] underline hover:text-warning-900"
+              >
+                Verificar mesmo assim →
+              </button>
+            </div>
+          </div>
+        ) : error ? (
           <div className="rounded-md border border-danger/30 bg-danger-50 p-2 text-xs text-danger-700">
             {error}
           </div>
-        )}
+        ) : null}
 
         {loading && !row && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -297,10 +331,29 @@ function LegalCheckBody({ row }: { row: LegalRow }) {
                 tone={owner.critical_hits > 0 ? "danger" : "success"}
               />
               <Metric
-                label="Tribunal"
-                value={owner.tribunal?.toUpperCase() ?? "—"}
+                label="Tribunais"
+                value={
+                  owner.tribunals_queried && owner.tribunals_queried.length > 0
+                    ? owner.tribunals_queried.length.toString()
+                    : "1"
+                }
+                sub={
+                  owner.tribunals_queried && owner.tribunals_queried.length > 0
+                    ? owner.tribunals_queried.map((t) => t.toUpperCase()).join(" · ")
+                    : owner.tribunal?.toUpperCase()
+                }
               />
             </div>
+
+            {owner.tribunals_failed && owner.tribunals_failed.length > 0 && (
+              <div className="rounded-md border border-warning/30 bg-warning-50 p-2 text-[11px] text-warning-700">
+                ⚠ Falha na consulta de:{" "}
+                <strong>
+                  {owner.tribunals_failed.map((t) => t.toUpperCase()).join(", ")}
+                </strong>
+                . Resultado pode estar incompleto.
+              </div>
+            )}
 
             {owner.critical_labels.length > 0 && (
               <div className="flex flex-wrap gap-1">
@@ -332,6 +385,16 @@ function LegalCheckBody({ row }: { row: LegalRow }) {
                           <span className="font-mono text-[11px]">
                             {p.numero_processo}
                           </span>
+                          <Badge
+                            variant={
+                              p.tribunal.startsWith("trt")
+                                ? "warning"
+                                : "secondary"
+                            }
+                            className="text-[9px]"
+                          >
+                            {p.tribunal.toUpperCase()}
+                          </Badge>
                         </div>
                         <div className="mt-0.5 text-[11px] text-muted-foreground">
                           {p.classe_nome ?? "Classe sem nome"}
@@ -400,10 +463,12 @@ function LegalCheckBody({ row }: { row: LegalRow }) {
 function Metric({
   label,
   value,
+  sub,
   tone,
 }: {
   label: string;
   value: string;
+  sub?: string;
   tone?: "success" | "danger";
 }) {
   return (
@@ -423,6 +488,11 @@ function Metric({
       >
         {value}
       </div>
+      {sub && (
+        <div className="mt-0.5 break-words text-[9px] uppercase tracking-wider text-muted-foreground">
+          {sub}
+        </div>
+      )}
     </div>
   );
 }

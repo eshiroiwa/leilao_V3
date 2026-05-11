@@ -50,24 +50,55 @@ def check_processes(
         )
 
     state = (property_row.get("state") or "").strip().upper()
-    tribunal = datajud.tribunal_for_state(state)
-    if not tribunal:
+    tribunals = datajud.tribunals_for_state(state)
+    if not tribunals:
         return OwnerProcessesResult(
             status="skipped",
             cpf_cnpj=cpf_cnpj,
-            skipped_reason=f"UF '{state}' sem TJ mapeado — não há tribunal default para consultar.",
+            skipped_reason=(
+                f"UF '{state}' sem tribunais mapeados — não há TJ/TRT default para consultar."
+            ),
         )
 
-    try:
-        query = datajud.search_by_document(cpf_cnpj, tribunal=tribunal, size=20)
-    except DataJudServiceError as exc:
+    # Itera pelos tribunais (TJ + TRT(s)). Erros parciais não derrubam o
+    # resultado — sinalizamos no `tribunals_failed`. Só viramos FAILED se
+    # NENHUM tribunal respondeu.
+    all_processes = []
+    queried: list[str] = []
+    failed: list[str] = []
+    total_hits = 0
+    critical_hits = 0
+    critical_labels_set: set[str] = set()
+
+    for tribunal in tribunals:
+        try:
+            q = datajud.search_by_document(cpf_cnpj, tribunal=tribunal, size=20)
+        except DataJudServiceError as exc:
+            logger.warning(
+                "legal.check_processes.tribunal_failed",
+                tribunal=tribunal,
+                error=str(exc),
+            )
+            failed.append(tribunal)
+            continue
+        queried.append(tribunal)
+        all_processes.extend(q.processes)
+        total_hits += q.total_hits
+        critical_hits += q.critical_hits
+        critical_labels_set.update(q.critical_labels)
+
+    if not queried:
         return OwnerProcessesResult(
             status="failed",
             cpf_cnpj=cpf_cnpj,
-            tribunal=tribunal,
-            skipped_reason=f"DataJud falhou: {exc}",
+            tribunal=tribunals[0],
+            tribunals_failed=failed,
+            skipped_reason=(
+                f"DataJud falhou em todos os tribunais consultados: {', '.join(failed)}"
+            ),
         )
 
+    # Sample: críticos primeiro, depois por data desc.
     sample = [
         ProcessSummary(
             numero_processo=p.numero_processo,
@@ -78,25 +109,30 @@ def check_processes(
             tribunal=p.tribunal,
             is_critical=p.is_critical,
         )
-        # Priorizamos os críticos no sample exibido ao usuário.
-        for p in sorted(query.processes, key=lambda x: not x.is_critical)[:10]
+        for p in sorted(
+            all_processes,
+            key=lambda x: (not x.is_critical, x.data_ajuizamento or ""),
+        )[:20]
     ]
 
     logger.info(
         "legal.check_processes.done",
         cpf_cnpj_digits=len(cpf_cnpj),
-        tribunal=tribunal,
-        total=query.total_hits,
-        critical=query.critical_hits,
+        tribunals_queried=queried,
+        tribunals_failed=failed,
+        total=total_hits,
+        critical=critical_hits,
     )
 
     return OwnerProcessesResult(
         status="completed",
         cpf_cnpj=cpf_cnpj,
-        tribunal=tribunal,
-        total_hits=query.total_hits,
-        critical_hits=query.critical_hits,
-        critical_labels=list(query.critical_labels),
+        tribunal=queried[0],
+        tribunals_queried=queried,
+        tribunals_failed=failed,
+        total_hits=total_hits,
+        critical_hits=critical_hits,
+        critical_labels=sorted(critical_labels_set),
         sample_processes=sample,
     )
 

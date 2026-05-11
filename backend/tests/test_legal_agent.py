@@ -12,16 +12,41 @@ from app.agents.legal.service import run_legal_check
 from app.services.cnj_datajud_service import DataJudQueryResult, ProcessHit
 
 
-def _mk_datajud(query_result: DataJudQueryResult) -> MagicMock:
+def _mk_datajud(
+    query_result: DataJudQueryResult,
+    *,
+    extra_tribunals: dict[str, DataJudQueryResult] | None = None,
+) -> MagicMock:
+    """Mock datajud que devolve [tjsp] para SP por default. Use
+    ``extra_tribunals`` para simular TRT respondendo também (key=slug)."""
     dj = MagicMock()
     dj.tribunal_for_state.side_effect = lambda s: {"SP": "tjsp", "RJ": "tjrj"}.get(
         (s or "").upper()
     )
-    dj.search_by_document.return_value = query_result
+    extras = extra_tribunals or {}
+
+    def _tribunals(s: str | None) -> list[str]:
+        uf = (s or "").upper()
+        if uf == "SP":
+            return ["tjsp", *extras.keys()] if extras else ["tjsp"]
+        if uf == "RJ":
+            return ["tjrj"]
+        return []
+
+    dj.tribunals_for_state.side_effect = _tribunals
+
+    by_tribunal = {"tjsp": query_result, **extras}
+
+    def _search(cpf, *, tribunal, size=20):  # type: ignore[no-untyped-def]
+        return by_tribunal[tribunal]
+
+    dj.search_by_document.side_effect = _search
     return dj
 
 
-def _query_result(critical: int = 0, total: int = 0) -> DataJudQueryResult:
+def _query_result(
+    critical: int = 0, total: int = 0, *, tribunal: str = "tjsp"
+) -> DataJudQueryResult:
     processes = [
         ProcessHit(
             numero_processo=f"0001234-56.2024.8.26.{i:03d}",
@@ -29,14 +54,14 @@ def _query_result(critical: int = 0, total: int = 0) -> DataJudQueryResult:
             classe_nome="Execução Fiscal" if i < critical else "Outro",
             orgao_julgador="1ª Vara",
             data_ajuizamento="2024-06-01",
-            tribunal="tjsp",
+            tribunal=tribunal,
             is_critical=i < critical,
         )
         for i in range(total)
     ]
     return DataJudQueryResult(
         cpf_cnpj="12345678900",
-        tribunal="tjsp",
+        tribunal=tribunal,
         total_hits=total,
         critical_hits=critical,
         processes=processes,
@@ -92,8 +117,68 @@ def test_check_processes_skipped_when_state_unmapped() -> None:
         datajud=dj,
     )
     assert out.status == "skipped"
-    assert "tribunal" in (out.skipped_reason or "").lower()
+    assert "tribuna" in (out.skipped_reason or "").lower()
     dj.search_by_document.assert_not_called()
+
+
+def test_check_processes_queries_multiple_tribunals_in_sp() -> None:
+    """Em SP, o mock devolve TJSP + TRT2 + TRT15 — todos devem ser consultados."""
+    trt2_result = DataJudQueryResult(
+        cpf_cnpj="12345678900", tribunal="trt2",
+        total_hits=2, critical_hits=2,
+        processes=[
+            ProcessHit(
+                numero_processo="0009999-99.2024.5.02.0001",
+                classe_codigo=985, classe_nome="Cumprimento Provisório",
+                orgao_julgador="1ª Vara do Trabalho",
+                data_ajuizamento="2024-08-01",
+                tribunal="trt2", is_critical=True,
+            ),
+            ProcessHit(
+                numero_processo="0008888-88.2024.5.02.0002",
+                classe_codigo=1660, classe_nome="Reclamação Trabalhista",
+                orgao_julgador="3ª Vara do Trabalho",
+                data_ajuizamento="2024-09-15",
+                tribunal="trt2", is_critical=True,
+            ),
+        ],
+        critical_labels=["Processo trabalhista"],
+    )
+    dj = _mk_datajud(_query_result(critical=1, total=2), extra_tribunals={"trt2": trt2_result})
+    out = check_processes(
+        property_row={"id": "p1", "owner_cpf_cnpj": "12345678900", "state": "SP"},
+        datajud=dj,
+    )
+    assert out.status == "completed"
+    assert "tjsp" in out.tribunals_queried
+    assert "trt2" in out.tribunals_queried
+    assert out.total_hits == 4  # 2 TJSP + 2 TRT2
+    assert out.critical_hits == 3  # 1 TJSP crítico + 2 TRT2
+    assert "Execução Fiscal" in out.critical_labels
+    assert "Processo trabalhista" in out.critical_labels
+
+
+def test_check_processes_continues_when_one_tribunal_fails() -> None:
+    """Falha em TRT não derruba o resultado — só registra em tribunals_failed."""
+    from app.services.cnj_datajud_service import DataJudServiceError
+
+    dj = MagicMock()
+    dj.tribunals_for_state.return_value = ["tjsp", "trt2"]
+
+    def _search(cpf, *, tribunal, size=20):  # type: ignore[no-untyped-def]
+        if tribunal == "tjsp":
+            return _query_result(critical=1, total=1)
+        raise DataJudServiceError("trt2 down")
+
+    dj.search_by_document.side_effect = _search
+    out = check_processes(
+        property_row={"id": "p1", "owner_cpf_cnpj": "12345678900", "state": "SP"},
+        datajud=dj,
+    )
+    assert out.status == "completed"
+    assert out.tribunals_queried == ["tjsp"]
+    assert out.tribunals_failed == ["trt2"]
+    assert out.total_hits == 1
 
 
 def test_check_processes_completed_with_no_critical() -> None:
@@ -121,18 +206,21 @@ def test_check_processes_completed_with_critical_findings() -> None:
     assert out.sample_processes[0].is_critical is True
 
 
-def test_check_processes_failed_on_datajud_error() -> None:
+def test_check_processes_failed_when_all_tribunals_error() -> None:
+    """Falha em TODOS os tribunais consultados → status FAILED."""
     from app.services.cnj_datajud_service import DataJudServiceError
 
     dj = MagicMock()
-    dj.tribunal_for_state.return_value = "tjsp"
+    dj.tribunals_for_state.return_value = ["tjsp", "trt2"]
     dj.search_by_document.side_effect = DataJudServiceError("network down")
     out = check_processes(
         property_row={"id": "p1", "owner_cpf_cnpj": "12345678900", "state": "SP"},
         datajud=dj,
     )
     assert out.status == "failed"
-    assert "network down" in (out.skipped_reason or "")
+    assert set(out.tribunals_failed) == {"tjsp", "trt2"}
+    assert "tjsp" in (out.skipped_reason or "")
+    assert "trt2" in (out.skipped_reason or "")
 
 
 # =============================================================================
@@ -187,7 +275,7 @@ def test_run_legal_check_flags_datajud_failure_as_critical() -> None:
     from app.services.cnj_datajud_service import DataJudServiceError
 
     dj = MagicMock()
-    dj.tribunal_for_state.return_value = "tjsp"
+    dj.tribunals_for_state.return_value = ["tjsp", "trt2"]
     dj.search_by_document.side_effect = DataJudServiceError("timeout")
     out = run_legal_check(
         property_row={"id": "p1", "owner_cpf_cnpj": "12345678900", "state": "SP"},

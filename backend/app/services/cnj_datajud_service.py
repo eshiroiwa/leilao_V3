@@ -83,8 +83,8 @@ _CRITICAL_CLASS_LABELS: Final[dict[int, str]] = {
 
 
 # Mapeamento UF → slug do TJ. DataJud cobre TJs estaduais + tribunais
-# federais; para o MVP defaultamos para o TJ da UF (foro mais provável
-# da execução que originou o leilão).
+# federais; defaultamos para o TJ da UF (foro mais provável da execução
+# civil que originou o leilão).
 _TJ_BY_STATE: Final[dict[str, str]] = {
     "AC": "tjac", "AL": "tjal", "AM": "tjam", "AP": "tjap",
     "BA": "tjba", "CE": "tjce", "DF": "tjdft", "ES": "tjes",
@@ -93,6 +93,41 @@ _TJ_BY_STATE: Final[dict[str, str]] = {
     "PI": "tjpi", "PR": "tjpr", "RJ": "tjrj", "RN": "tjrn",
     "RO": "tjro", "RR": "tjrr", "RS": "tjrs", "SC": "tjsc",
     "SE": "tjse", "SP": "tjsp", "TO": "tjto",
+}
+
+# Mapeamento UF → TRTs com jurisdição. Importante porque crédito
+# trabalhista (CLT art. 449) tem privilégio na execução: penhora de
+# imóvel do CNPJ executado é cenário frequente. SP é cortado em dois:
+# TRT2 (capital + região metropolitana) e TRT15 (interior, sede em
+# Campinas). Outras UFs têm apenas um TRT.
+_TRT_BY_STATE: Final[dict[str, tuple[str, ...]]] = {
+    "AC": ("trt14",),
+    "AL": ("trt19",),
+    "AM": ("trt11",),
+    "AP": ("trt8",),
+    "BA": ("trt5",),
+    "CE": ("trt7",),
+    "DF": ("trt10",),
+    "ES": ("trt17",),
+    "GO": ("trt18",),
+    "MA": ("trt16",),
+    "MG": ("trt3",),
+    "MS": ("trt24",),
+    "MT": ("trt23",),
+    "PA": ("trt8",),
+    "PB": ("trt13",),
+    "PE": ("trt6",),
+    "PI": ("trt22",),
+    "PR": ("trt9",),
+    "RJ": ("trt1",),
+    "RN": ("trt21",),
+    "RO": ("trt14",),
+    "RR": ("trt11",),
+    "RS": ("trt4",),
+    "SC": ("trt12",),
+    "SE": ("trt20",),
+    "SP": ("trt2", "trt15"),
+    "TO": ("trt10",),
 }
 
 
@@ -133,10 +168,32 @@ class DataJudService:
 
     # ------------------------------------------------------------------ #
     def tribunal_for_state(self, state: str | None) -> str | None:
-        """Slug do TJ default para uma UF (ou None se desconhecida)."""
+        """Slug do TJ default para uma UF (ou None se desconhecida).
+
+        Mantido por retrocompatibilidade — para consultas multi-tribunais
+        (TJ + TRT) use :meth:`tribunals_for_state`.
+        """
         if not state:
             return None
         return _TJ_BY_STATE.get(state.strip().upper())
+
+    def tribunals_for_state(self, state: str | None) -> list[str]:
+        """Lista de tribunais a consultar para uma UF: TJ-UF + TRT(s).
+
+        Devolve ``[]`` quando a UF é inválida/desconhecida. Para SP devolve
+        ``[tjsp, trt2, trt15]`` — interior de SP fica no TRT15 (sede em
+        Campinas), capital e região metropolitana no TRT2. Outras UFs têm
+        apenas um TRT por jurisdição.
+        """
+        if not state:
+            return []
+        uf = state.strip().upper()
+        out: list[str] = []
+        tj = _TJ_BY_STATE.get(uf)
+        if tj:
+            out.append(tj)
+        out.extend(_TRT_BY_STATE.get(uf, ()))
+        return out
 
     # ------------------------------------------------------------------ #
     def search_by_document(
@@ -194,6 +251,7 @@ class DataJudService:
         total_hits = total["value"] if isinstance(total, dict) else int(total or 0)
         raw_hits = hits_root.get("hits") or []
 
+        is_trt = tribunal.startswith("trt")
         processes: list[ProcessHit] = []
         for h in raw_hits:
             src = h.get("_source") or {}
@@ -203,6 +261,17 @@ class DataJudService:
                 classe_codigo_int = int(classe_codigo) if classe_codigo is not None else None
             except (TypeError, ValueError):
                 classe_codigo_int = None
+            # Critério de criticidade:
+            #   1) Classe processual está no whitelist patrimonial; OU
+            #   2) Tribunal é TRT — qualquer processo trabalhista contra a
+            #      empresa é sinal de risco para o imóvel (penhora de
+            #      bens do executado é rotina na fase de execução
+            #      trabalhista, e crédito trabalhista tem privilégio).
+            critical_by_class = (
+                classe_codigo_int is not None
+                and classe_codigo_int in _CRITICAL_CLASS_CODES
+            )
+            is_critical_hit = critical_by_class or is_trt
             processes.append(
                 ProcessHit(
                     numero_processo=str(src.get("numeroProcesso") or ""),
@@ -217,20 +286,22 @@ class DataJudService:
                     ),
                     data_ajuizamento=src.get("dataAjuizamento"),
                     tribunal=tribunal,
-                    is_critical=(
-                        classe_codigo_int is not None
-                        and classe_codigo_int in _CRITICAL_CLASS_CODES
-                    ),
+                    is_critical=is_critical_hit,
                 )
             )
 
         critical_hits = sum(1 for p in processes if p.is_critical)
-        critical_labels = sorted({
-            _CRITICAL_CLASS_LABELS.get(p.classe_codigo or 0, "")
-            for p in processes
-            if p.is_critical and p.classe_codigo in _CRITICAL_CLASS_LABELS
-        })
-        critical_labels = [lbl for lbl in critical_labels if lbl]
+        labels_set: set[str] = set()
+        for p in processes:
+            if not p.is_critical:
+                continue
+            lbl = _CRITICAL_CLASS_LABELS.get(p.classe_codigo or 0)
+            if lbl:
+                labels_set.add(lbl)
+            elif p.tribunal.startswith("trt"):
+                # Classe não mapeada mas é TRT — sinal trabalhista genérico.
+                labels_set.add("Processo trabalhista")
+        critical_labels = sorted(labels_set)
 
         result = DataJudQueryResult(
             cpf_cnpj=digits,

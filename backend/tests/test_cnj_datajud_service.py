@@ -63,6 +63,45 @@ def test_tribunal_for_state_returns_none_for_unknown() -> None:
 
 
 # =============================================================================
+# tribunals_for_state — TJ + TRT por UF
+# =============================================================================
+def test_tribunals_for_state_sp_has_tj_and_two_trts() -> None:
+    """SP é cortado em dois TRTs: TRT2 (capital) e TRT15 (interior)."""
+    svc = DataJudService()
+    assert svc.tribunals_for_state("SP") == ["tjsp", "trt2", "trt15"]
+
+
+def test_tribunals_for_state_other_states_have_tj_and_one_trt() -> None:
+    svc = DataJudService()
+    assert svc.tribunals_for_state("RJ") == ["tjrj", "trt1"]
+    assert svc.tribunals_for_state("MG") == ["tjmg", "trt3"]
+    assert svc.tribunals_for_state("RS") == ["tjrs", "trt4"]
+
+
+def test_tribunals_for_state_unknown_returns_empty() -> None:
+    svc = DataJudService()
+    assert svc.tribunals_for_state("XX") == []
+    assert svc.tribunals_for_state(None) == []
+
+
+def test_search_in_trt_marks_all_processes_as_critical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Qualquer processo retornado por TRT é crítico — crédito trabalhista
+    tem privilégio e penhora de imóvel é rotineira em execução."""
+    # Reclamação Trabalhista (classe 1660 — NÃO está no whitelist patrimonial).
+    monkeypatch.setattr(
+        cnj_datajud_service.httpx, "post",
+        lambda *a, **kw: _Resp(200, _payload(1660, 985)),
+    )
+    out = DataJudService().search_by_document("12345678000190", tribunal="trt2")
+    assert out.total_hits == 2
+    # Mesmo a classe 1660 (Reclamação) sendo genérica, vira crítica em TRT.
+    assert out.critical_hits == 2
+    assert "Processo trabalhista" in out.critical_labels
+
+
+# =============================================================================
 # search_by_document
 # =============================================================================
 def test_search_by_document_rejects_invalid_lengths() -> None:

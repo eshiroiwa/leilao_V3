@@ -396,7 +396,12 @@ export type OwnerProcessesResult = {
   status: LegalCheckStatus;
   skipped_reason: string | null;
   cpf_cnpj: string | null;
+  /** Tribunal "principal" (primeiro com sucesso) — retrocompat. */
   tribunal: string | null;
+  /** Lista completa de tribunais consultados com sucesso (TJ + TRT). */
+  tribunals_queried?: string[];
+  /** Tribunais que falharam na consulta (timeout/erro). */
+  tribunals_failed?: string[];
   total_hits: number;
   critical_hits: number;
   critical_labels: string[];
