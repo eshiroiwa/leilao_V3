@@ -53,6 +53,38 @@ def test_check_processes_skipped_when_no_cpf_cnpj() -> None:
     assert "owner_cpf_cnpj" in (out.skipped_reason or "")
 
 
+def test_check_processes_normalizes_punctuation_from_user_input() -> None:
+    """Usuário digita '123.456.789-00' no frontend → check normaliza para 11 dígitos."""
+    dj = _mk_datajud(_query_result(critical=0, total=2))
+    out = check_processes(
+        property_row={
+            "id": "p1",
+            "owner_cpf_cnpj": "123.456.789-00",
+            "state": "SP",
+        },
+        datajud=dj,
+    )
+    assert out.status == "completed"
+    assert out.cpf_cnpj == "12345678900"  # só dígitos
+    dj.search_by_document.assert_called_once_with(
+        "12345678900", tribunal="tjsp", size=20,
+    )
+
+
+def test_check_processes_skipped_on_invalid_length() -> None:
+    """Documento com tamanho ≠ {11, 14} é rejeitado com mensagem clara."""
+    out = check_processes(
+        property_row={
+            "id": "p1",
+            "owner_cpf_cnpj": "12345",
+            "state": "SP",
+        },
+        datajud=MagicMock(),
+    )
+    assert out.status == "skipped"
+    assert "5 dígito" in (out.skipped_reason or "")
+
+
 def test_check_processes_skipped_when_state_unmapped() -> None:
     dj = _mk_datajud(_query_result())
     out = check_processes(

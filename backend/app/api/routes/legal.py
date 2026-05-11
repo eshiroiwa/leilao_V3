@@ -17,6 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
 from app.agents.legal.service import run_legal_check
 from app.core.logging import get_logger
@@ -25,6 +26,22 @@ from app.services.supabase_service import SupabaseError, get_supabase_service
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/properties", tags=["legal-check"])
+
+
+class LegalCheckRequest(BaseModel):
+    """Body opcional do POST /legal-checks.
+
+    Quando o Scraper não conseguiu extrair o CPF/CNPJ do edital, o usuário
+    pode informar manualmente aqui. O valor digitado é normalizado para
+    apenas dígitos e tem PRIORIDADE sobre o que está em `properties`.
+    Persistência não é alterada — a row em `properties` permanece como
+    estava; o override vale só para esta verificação.
+    """
+
+    owner_cpf_cnpj: str | None = Field(
+        default=None,
+        description="CPF (11) ou CNPJ (14) — só dígitos ou com pontuação.",
+    )
 
 
 def _legal_result_to_payload(
@@ -49,7 +66,10 @@ def _legal_result_to_payload(
     "/{property_id}/legal-checks",
     summary="Roda uma verificação jurídica (CNJ DataJud + ONR stub) e persiste o resultado.",
 )
-async def create_legal_check(property_id: UUID) -> dict[str, Any]:
+async def create_legal_check(
+    property_id: UUID,
+    payload_in: LegalCheckRequest = LegalCheckRequest(),
+) -> dict[str, Any]:
     sb = get_supabase_service()
 
     try:
@@ -60,6 +80,14 @@ async def create_legal_check(property_id: UUID) -> dict[str, Any]:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Property {property_id} não encontrado"
         )
+
+    # Override do usuário: o CPF/CNPJ digitado no front é colocado no
+    # property_row apenas para esta execução (não persiste em `properties`
+    # — usuário decide quando promover). Normalização ficamos a cargo do
+    # service via _normalize_cpf_cnpj idempotente.
+    if payload_in.owner_cpf_cnpj:
+        # Cópia rasa — não muta o dict original devolvido pelo Supabase.
+        prop = {**prop, "owner_cpf_cnpj": payload_in.owner_cpf_cnpj}
 
     result = await run_in_threadpool(run_legal_check, property_row=prop)
     payload = _legal_result_to_payload(str(property_id), result)

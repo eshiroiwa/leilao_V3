@@ -31,11 +31,22 @@ def check_processes(
     Não levanta — qualquer falha vira ``OwnerProcessesResult`` com
     ``status`` explícito + ``skipped_reason``.
     """
-    cpf_cnpj = (property_row.get("owner_cpf_cnpj") or "").strip()
-    if not cpf_cnpj:
+    raw = (property_row.get("owner_cpf_cnpj") or "").strip()
+    # Normaliza cedo — o valor pode vir tanto do Scraper (já limpo) quanto
+    # de um override do usuário digitado no frontend (com pontuação).
+    cpf_cnpj = "".join(c for c in raw if c.isdigit())
+    if not raw:
         return OwnerProcessesResult(
             status="skipped",
-            skipped_reason="property sem owner_cpf_cnpj — scraper não extraiu.",
+            skipped_reason="property sem owner_cpf_cnpj — scraper não extraiu (informe manualmente).",
+        )
+    if len(cpf_cnpj) not in (11, 14):
+        return OwnerProcessesResult(
+            status="skipped",
+            cpf_cnpj=cpf_cnpj or None,
+            skipped_reason=(
+                f"CPF/CNPJ com {len(cpf_cnpj)} dígito(s) — esperado 11 (CPF) ou 14 (CNPJ)."
+            ),
         )
 
     state = (property_row.get("state") or "").strip().upper()

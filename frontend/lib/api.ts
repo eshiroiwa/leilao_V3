@@ -136,6 +136,11 @@ export type Property = {
   iptu_arrears: number | null;
   condo_arrears: number | null;
   auctioneer_fee_pct: number | null;
+  // Identificadores jurídicos/registrais (Migration 013)
+  owner_cpf_cnpj: string | null;
+  matricula: string | null;
+  registry_office: string | null;
+  inscricao_municipal: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -634,10 +639,13 @@ export const api = {
     ),
 
   // ===== Agente Legal =====
-  runLegalCheck: (propertyId: string) =>
+  runLegalCheck: (
+    propertyId: string,
+    payload: { owner_cpf_cnpj?: string | null } = {},
+  ) =>
     request<LegalCheckResult & { id?: string | null }>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/legal-checks`,
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify(payload) },
     ),
 
   getLatestLegalCheck: (propertyId: string) =>

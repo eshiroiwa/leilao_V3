@@ -20,8 +20,34 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { api, type LegalCheckResult, type Property } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+/** Mantém só dígitos para validar comprimento e enviar limpo ao backend. */
+function digitsOnly(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
+/** Formata CPF (XXX.XXX.XXX-XX) ou CNPJ (XX.XXX.XXX/XXXX-XX) à medida que o
+ *  usuário digita; preserva apenas dígitos para validação de comprimento. */
+function maskCpfCnpj(raw: string): string {
+  const d = digitsOnly(raw).slice(0, 14);
+  if (d.length <= 11) {
+    // CPF: 000.000.000-00
+    return d
+      .replace(/^(\d{3})(\d)/, "$1.$2")
+      .replace(/^(\d{3})\.(\d{3})(\d)/, "$1.$2.$3")
+      .replace(/\.(\d{3})(\d)/, ".$1-$2");
+  }
+  // CNPJ: 00.000.000/0000-00
+  return d
+    .replace(/^(\d{2})(\d)/, "$1.$2")
+    .replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2.$3")
+    .replace(/\.(\d{3})(\d)/, ".$1/$2")
+    .replace(/(\d{4})(\d)/, "$1-$2");
+}
 
 type LegalRow = LegalCheckResult & { id?: string | null };
 
@@ -30,6 +56,13 @@ export function LegalCheckCard({ property }: { property: Property }) {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // CPF/CNPJ a ser usado na verificação. Pré-preenche com o que o Scraper
+  // extraiu (se houver); usuário pode sobrescrever a qualquer momento.
+  const scrapedCpfCnpj = property.owner_cpf_cnpj ?? "";
+  const [cpfCnpj, setCpfCnpj] = useState<string>(
+    scrapedCpfCnpj ? maskCpfCnpj(scrapedCpfCnpj) : "",
+  );
 
   // Carrega o último check ao montar.
   useEffect(() => {
@@ -51,11 +84,28 @@ export function LegalCheckCard({ property }: { property: Property }) {
     };
   }, [property.id]);
 
+  const digits = digitsOnly(cpfCnpj);
+  const isValid = digits.length === 11 || digits.length === 14;
+  const isEmpty = digits.length === 0;
+  const isManualOverride = digits !== digitsOnly(scrapedCpfCnpj);
+
   const runCheck = async () => {
+    if (isEmpty) {
+      setError("Informe o CPF ou CNPJ do proprietário antes de verificar.");
+      return;
+    }
+    if (!isValid) {
+      setError(
+        `Documento inválido (${digits.length} dígitos). Esperado 11 (CPF) ou 14 (CNPJ).`,
+      );
+      return;
+    }
     setRunning(true);
     setError(null);
     try {
-      const next = await api.runLegalCheck(property.id);
+      const next = await api.runLegalCheck(property.id, {
+        owner_cpf_cnpj: digits,
+      });
       setRow(next);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -76,7 +126,7 @@ export function LegalCheckCard({ property }: { property: Property }) {
             size="sm"
             variant="outline"
             onClick={runCheck}
-            disabled={running || loading}
+            disabled={running || loading || isEmpty || !isValid}
           >
             {running ? (
               <>
@@ -96,6 +146,49 @@ export function LegalCheckCard({ property }: { property: Property }) {
         </p>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
+        {/* Input de CPF/CNPJ — editável, pré-preenchido com o que o
+            Scraper extraiu (se algo). */}
+        <div className="space-y-1.5 rounded-md border bg-muted/20 p-2.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <Label htmlFor="legal_cpf" className="text-xs">
+              CPF ou CNPJ do proprietário
+            </Label>
+            {scrapedCpfCnpj && (
+              <span className="text-[10px] text-muted-foreground">
+                {isManualOverride
+                  ? "editado pelo usuário"
+                  : "extraído do edital"}
+              </span>
+            )}
+            {!scrapedCpfCnpj && (
+              <span className="text-[10px] text-warning-700">
+                não extraído — informe manualmente
+              </span>
+            )}
+          </div>
+          <Input
+            id="legal_cpf"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="000.000.000-00 ou 00.000.000/0000-00"
+            value={cpfCnpj}
+            onChange={(e) => setCpfCnpj(maskCpfCnpj(e.target.value))}
+            className={cn(
+              !isEmpty && !isValid && "border-warning/60 focus-visible:ring-warning",
+            )}
+          />
+          <p className="text-[10px] text-muted-foreground">
+            {isEmpty
+              ? "Preencha para consultar processos no CNJ DataJud."
+              : !isValid
+                ? `${digits.length} dígito(s) — esperado 11 (CPF) ou 14 (CNPJ).`
+                : digits.length === 11
+                  ? "Será consultado como CPF no TJ da UF do imóvel."
+                  : "Será consultado como CNPJ no TJ da UF do imóvel."}
+          </p>
+        </div>
+
         {error && (
           <div className="rounded-md border border-danger/30 bg-danger-50 p-2 text-xs text-danger-700">
             {error}
@@ -111,9 +204,10 @@ export function LegalCheckCard({ property }: { property: Property }) {
 
         {!loading && !row && !error && (
           <p className="text-xs text-muted-foreground">
-            Nenhuma verificação realizada para este imóvel. Clique em
-            &quot;Verificar&quot; para consultar processos contra o
-            proprietário no CNJ DataJud.
+            Nenhuma verificação realizada para este imóvel.
+            {isEmpty
+              ? " Informe o CPF/CNPJ acima e clique em \"Verificar\"."
+              : " Clique em \"Verificar\" para consultar o CNJ DataJud."}
           </p>
         )}
 
