@@ -6,6 +6,7 @@ from app.api.routes import (
     agents,
     dashboard,
     deep,
+    documents,
     legal,
     market_rates,
     opportunity,
@@ -21,6 +22,8 @@ api_router.include_router(opportunity.router)
 api_router.include_router(deep.router_property)
 api_router.include_router(deep.router_global)
 api_router.include_router(legal.router)
+api_router.include_router(documents.router_property)
+api_router.include_router(documents.router_document)
 api_router.include_router(dashboard.router)
 api_router.include_router(market_rates.router)
 

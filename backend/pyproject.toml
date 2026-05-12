@@ -31,6 +31,10 @@ dependencies = [
     "Pillow>=10.4.0",
     # Multipart upload (FastAPI UploadFile)
     "python-multipart>=0.0.20",
+    # Extração de texto digital de PDF (analise consolidada de documentos)
+    "pypdf>=5.0.0",
+    # Extração de texto de DOCX (analise consolidada de documentos)
+    "python-docx>=1.1.2",
 ]
 
 [project.optional-dependencies]

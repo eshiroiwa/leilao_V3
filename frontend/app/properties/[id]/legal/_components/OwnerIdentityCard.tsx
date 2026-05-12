@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Search } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Search } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -30,17 +30,31 @@ export function OwnerIdentityCard({
   currentCpfCnpj: string | null;
   running: boolean;
   error: string | null;
-  onRun: (cpfCnpj: string | null) => void;
+  onRun: (params: {
+    owner_name: string | null;
+    owner_cpf_cnpj: string | null;
+  }) => void;
 }) {
-  const [draft, setDraft] = useState<string>(
+  // Nome do proprietário — sinal principal para a busca web.
+  const [nameDraft, setNameDraft] = useState<string>(property.owner_name ?? "");
+
+  // CPF/CNPJ — secundário, só para registro.
+  const [cpfDraft, setCpfDraft] = useState<string>(
     maskCpfCnpj(currentCpfCnpj ?? property.owner_cpf_cnpj ?? ""),
   );
+  const [cpfExpanded, setCpfExpanded] = useState<boolean>(
+    !!currentCpfCnpj || !!property.owner_cpf_cnpj,
+  );
 
-  const v = validateCpfCnpj(draft);
-  const isComplete = v.kind === "cpf" || v.kind === "cnpj";
-  const dvOk = isComplete && v.dvValid;
-  const canRun =
-    !running && (v.kind === "empty" || (isComplete && dvOk));
+  const v = validateCpfCnpj(cpfDraft);
+  const cpfFilled = v.kind === "cpf" || v.kind === "cnpj";
+  const cpfDvOk = cpfFilled && v.dvValid;
+  const cpfBlocking = cpfFilled && !cpfDvOk;
+
+  const nameTrimmed = nameDraft.trim();
+  const nameValid = nameTrimmed.length > 0 && nameTrimmed.split(/\s+/).length >= 2;
+
+  const canRun = !running && nameValid && !cpfBlocking;
 
   return (
     <Card>
@@ -49,59 +63,100 @@ export function OwnerIdentityCard({
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <div className="space-y-1">
-          <Label htmlFor="owner_cpf_cnpj" className="text-[11px]">
-            CPF / CNPJ
+          <Label htmlFor="owner_name" className="text-[11px]">
+            Nome completo do proprietário
           </Label>
           <Input
-            id="owner_cpf_cnpj"
-            value={draft}
-            placeholder="000.000.000-00"
-            onChange={(e) => setDraft(maskCpfCnpj(e.target.value))}
-            aria-invalid={isComplete && !dvOk}
+            id="owner_name"
+            value={nameDraft}
+            placeholder="Ex.: João da Silva Pereira"
+            onChange={(e) => setNameDraft(e.target.value)}
+            aria-invalid={nameDraft.length > 0 && !nameValid}
           />
-          {isComplete && !dvOk && (
+          {nameDraft.length > 0 && !nameValid && (
             <p className="text-[10px] text-destructive">
-              Documento inválido (DV não confere).
+              Informe nome completo (≥ 2 palavras).
             </p>
           )}
-          {isComplete && dvOk && (
+          {!nameDraft && (
             <p className="text-[10px] text-muted-foreground">
-              {v.kind === "cpf" ? "CPF válido" : "CNPJ válido"}
-            </p>
-          )}
-          {v.kind === "incomplete" && (
-            <p className="text-[10px] text-muted-foreground">
-              Digite 11 (CPF) ou 14 (CNPJ) dígitos.
+              Scraper não extraiu o nome — informe manualmente para buscar.
             </p>
           )}
         </div>
 
         <Button
           className="w-full"
-          onClick={() => {
-            const dg = digitsOnly(draft);
-            onRun(dg || null);
-          }}
+          onClick={() =>
+            onRun({
+              owner_name: nameTrimmed || null,
+              owner_cpf_cnpj: digitsOnly(cpfDraft) || null,
+            })
+          }
           disabled={!canRun}
         >
           {running ? (
             <>
               <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-              Consultando DataJud + web…
+              Buscando…
             </>
           ) : (
             <>
               <Search className="mr-1.5 size-3.5" />
-              Executar análise jurídica
+              Buscar processos do proprietário
             </>
           )}
         </Button>
-        {error && (
-          <p className="text-xs text-destructive">{error}</p>
+
+        <button
+          type="button"
+          onClick={() => setCpfExpanded((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          <span>CPF/CNPJ (opcional, apenas para registro)</span>
+          {cpfExpanded ? (
+            <ChevronUp className="size-3" />
+          ) : (
+            <ChevronDown className="size-3" />
+          )}
+        </button>
+
+        {cpfExpanded && (
+          <div className="space-y-1">
+            <Input
+              id="owner_cpf_cnpj"
+              value={cpfDraft}
+              placeholder="000.000.000-00"
+              onChange={(e) => setCpfDraft(maskCpfCnpj(e.target.value))}
+              aria-invalid={cpfBlocking}
+            />
+            {cpfBlocking && (
+              <p className="text-[10px] text-destructive">
+                Documento inválido (DV não confere).
+              </p>
+            )}
+            {cpfFilled && cpfDvOk && (
+              <p className="text-[10px] text-muted-foreground">
+                {v.kind === "cpf" ? "CPF válido" : "CNPJ válido"} — fica
+                registrado mas não entra na busca.
+              </p>
+            )}
+            {v.kind === "incomplete" && (
+              <p className="text-[10px] text-muted-foreground">
+                Digite 11 (CPF) ou 14 (CNPJ) dígitos.
+              </p>
+            )}
+          </div>
         )}
+
+        {error && <p className="text-xs text-destructive">{error}</p>}
+
         <p className="text-[10px] text-muted-foreground">
-          Consulta o CNJ DataJud (TJ + TRT da UF) e faz busca web por
-          anulatórias/embargos ligados ao nome.
+          A descoberta usa busca web (Firecrawl) sobre o NOME do proprietário,
+          extrai números CNJ dos snippets e enriquece cada um via CNJ DataJud.
+          O DataJud público não permite busca direta por CPF/nome (LGPD), por
+          isso o nome é o sinal real — homônimos podem aparecer e devem ser
+          validados.
         </p>
       </CardContent>
     </Card>

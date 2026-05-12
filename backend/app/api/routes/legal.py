@@ -12,7 +12,7 @@ Supabase). ONR é stub por ora — vira parte opcional do payload no futuro.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
@@ -21,12 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.legal.service import run_legal_check
 from app.core.logging import get_logger
-from app.services.matricula_ocr_service import (
-    MatriculaOcrError,
-    extract_matricula,
-)
 from app.services.supabase_service import SupabaseError, get_supabase_service
-from app.services.vision_service import get_vision_service
 
 logger = get_logger(__name__)
 
@@ -41,11 +36,41 @@ class LegalCheckRequest(BaseModel):
     apenas dígitos e tem PRIORIDADE sobre o que está em `properties`.
     Persistência não é alterada — a row em `properties` permanece como
     estava; o override vale só para esta verificação.
+
+    ``scope`` e ``force_refresh`` controlam a busca DataJud:
+      * ``scope="national"`` (default): consulta TODOS os 57 tribunais
+        (26 TJs + 24 TRTs + 6 TRFs + STJ) em paralelo. Combina CPF e nome
+        do proprietário no mesmo request.
+      * ``scope="state"``: comportamento legado — só TJ + TRTs da UF.
+      * ``force_refresh=True``: ignora o cache de 7 dias e força hit fresco
+        em todos os tribunais (UI: botão "Reconsultar agora").
     """
 
+    owner_name: str | None = Field(
+        default=None,
+        description=(
+            "Nome completo do proprietário — usado nas queries Firecrawl "
+            "(sinal real de descoberta). Sobrescreve `property.owner_name` "
+            "apenas para esta consulta."
+        ),
+    )
     owner_cpf_cnpj: str | None = Field(
         default=None,
-        description="CPF (11) ou CNPJ (14) — só dígitos ou com pontuação.",
+        description=(
+            "CPF (11) ou CNPJ (14) — só dígitos ou com pontuação. "
+            "Não é usado na busca (DataJud não indexa partes por LGPD); "
+            "fica registrado para auditoria."
+        ),
+    )
+    scope: Literal["national", "state"] = Field(
+        default="national",
+        description=(
+            "national = todos os tribunais (default). state = só TJ+TRTs da UF."
+        ),
+    )
+    force_refresh: bool = Field(
+        default=False,
+        description="True ignora cache de 7 dias e força hit fresco.",
     )
 
 
@@ -100,15 +125,21 @@ async def create_legal_check(
             status.HTTP_404_NOT_FOUND, f"Property {property_id} não encontrado"
         )
 
-    # Override do usuário: o CPF/CNPJ digitado no front é colocado no
-    # property_row apenas para esta execução (não persiste em `properties`
-    # — usuário decide quando promover). Normalização ficamos a cargo do
-    # service via _normalize_cpf_cnpj idempotente.
+    # Overrides do usuário: nome e CPF/CNPJ digitados no front são
+    # aplicados ao property_row apenas para esta execução (não persistem
+    # em `properties` — usuário decide quando promover). Cópia rasa para
+    # não mutar o dict original devolvido pelo Supabase.
+    if payload_in.owner_name and payload_in.owner_name.strip():
+        prop = {**prop, "owner_name": payload_in.owner_name.strip()}
     if payload_in.owner_cpf_cnpj:
-        # Cópia rasa — não muta o dict original devolvido pelo Supabase.
         prop = {**prop, "owner_cpf_cnpj": payload_in.owner_cpf_cnpj}
 
-    result = await run_in_threadpool(run_legal_check, property_row=prop)
+    result = await run_in_threadpool(
+        run_legal_check,
+        property_row=prop,
+        scope=payload_in.scope,
+        force_refresh=payload_in.force_refresh,
+    )
     payload = _legal_result_to_payload(str(property_id), result)
 
     try:
@@ -134,29 +165,57 @@ async def get_latest_legal_check(property_id: UUID) -> dict[str, Any] | None:
         )
     except Exception as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
-    if row and row.get("matricula_ocr"):
-        # Anexa signed URL temporária do PDF para o frontend renderizar
-        # o link "baixar PDF original".
+    if not row:
+        return row
+
+    # Prioriza a matrícula mais recente em property_documents (modelo novo).
+    # Cai para legal_checks.matricula_ocr.pdf_path se não houver.
+    pdf_path: str | None = None
+    try:
+        docs = await run_in_threadpool(
+            sb.list_property_documents, str(property_id)
+        )
+    except Exception:  # noqa: BLE001
+        docs = []
+    for doc in docs:
+        if doc.get("doc_type") == "matricula" and doc.get("storage_path"):
+            pdf_path = doc["storage_path"]
+            break
+    if not pdf_path and row.get("matricula_ocr"):
         pdf_path = (row["matricula_ocr"] or {}).get("pdf_path")
-        if pdf_path:
-            signed = await run_in_threadpool(
-                sb.get_legal_pdf_signed_url, path=pdf_path
-            )
-            row["matricula_pdf_signed_url"] = signed
+    if pdf_path:
+        signed = await run_in_threadpool(
+            sb.get_legal_pdf_signed_url, path=pdf_path
+        )
+        row["matricula_pdf_signed_url"] = signed
     return row
 
 
 @router.post(
     "/{property_id}/legal/matricula",
     summary=(
-        "Sobe um PDF de matrícula, faz OCR estruturado via Vision e persiste"
-        " no último legal_check (ou cria um novo)."
+        "[DEPRECADO] Shim que anexa a matrícula como property_document sem"
+        " disparar OCR. Use POST /properties/{id}/documents."
     ),
+    deprecated=True,
 )
 async def upload_matricula(
     property_id: UUID,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
+    """Shim de retrocompat — encaminha para o gerenciador de documentos.
+
+    Mantido para não quebrar clientes em produção que ainda chamam este
+    endpoint. Sobe o PDF, cria uma row em ``property_documents`` com
+    ``doc_type='matricula'`` e devolve ``matricula_ocr=null`` (a análise
+    LLM agora é sob demanda via POST /properties/{id}/documents/analyze).
+    """
+    logger.warning(
+        "legal.matricula.deprecated",
+        property_id=str(property_id),
+        filename=file.filename,
+    )
+
     if file.content_type not in ("application/pdf", "application/x-pdf"):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -181,68 +240,40 @@ async def upload_matricula(
             status.HTTP_404_NOT_FOUND, f"Property {property_id} não encontrado"
         )
 
-    # 1. Upload do PDF no bucket privado (path, não URL pública).
-    pdf_path = await run_in_threadpool(
-        sb.upload_legal_pdf,
+    storage_path = await run_in_threadpool(
+        sb.upload_legal_document,
         property_id=str(property_id),
         content=content,
+        filename=file.filename or "matricula.pdf",
+        content_type="application/pdf",
     )
+    if not storage_path:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Falha ao enviar o arquivo ao Storage.",
+        )
 
-    # 2. OCR via Vision (síncrono, joga em threadpool).
-    vision = get_vision_service()
+    payload = {
+        "property_id": str(property_id),
+        "doc_type": "matricula",
+        "custom_label": None,
+        "original_filename": file.filename or "matricula.pdf",
+        "storage_path": storage_path,
+        "mime_type": "application/pdf",
+        "size_bytes": len(content),
+    }
     try:
-        ocr_result = await run_in_threadpool(
-            extract_matricula,
-            content,
-            vision=vision,
-            pdf_path=pdf_path,
-        )
-    except MatriculaOcrError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        row = await run_in_threadpool(sb.insert_property_document, payload)
+    except SupabaseError as exc:
+        await run_in_threadpool(sb.delete_legal_object, storage_path)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
-    # 3. Persiste no último legal_check (UPDATE) ou cria placeholder mínimo.
-    latest = await run_in_threadpool(
-        sb.get_latest_legal_check, str(property_id)
+    signed_url = await run_in_threadpool(
+        sb.get_legal_pdf_signed_url, path=storage_path
     )
-    matricula_ocr_json = ocr_result.model_dump(mode="json")
-    if latest and latest.get("id"):
-        try:
-            await run_in_threadpool(
-                sb.update_legal_check,
-                latest["id"],
-                {"matricula_ocr": matricula_ocr_json},
-            )
-        except SupabaseError as exc:
-            logger.warning("legal.matricula.persist_failed", error=str(exc))
-    else:
-        # Não há legal_check ainda — cria um placeholder só com a matrícula.
-        placeholder = {
-            "property_id": str(property_id),
-            "started_at": ocr_result.extracted_at.isoformat()
-            if ocr_result.extracted_at
-            else None,
-            "completed_at": ocr_result.extracted_at.isoformat()
-            if ocr_result.extracted_at
-            else None,
-            "duration_ms": 0,
-            "owner_processes": None,
-            "matricula_check": None,
-            "has_critical_findings": False,
-            "critical_findings": [],
-            "matricula_ocr": matricula_ocr_json,
-        }
-        try:
-            await run_in_threadpool(sb.insert_legal_check, placeholder)
-        except SupabaseError as exc:
-            logger.warning("legal.matricula.placeholder_failed", error=str(exc))
-
-    # 4. Devolve OCR + signed URL para download imediato.
-    signed_url: str | None = None
-    if pdf_path:
-        signed_url = await run_in_threadpool(
-            sb.get_legal_pdf_signed_url, path=pdf_path
-        )
     return {
-        "matricula_ocr": matricula_ocr_json,
+        "matricula_ocr": None,
         "pdf_signed_url": signed_url,
+        "document_id": row.get("id"),
+        "migrated": True,
     }

@@ -18,7 +18,11 @@ from app.agents.legal.nodes.check_processes import check_processes
 from app.agents.legal.nodes.web_search_anulatorias import (
     web_search_anulatorias,
 )
-from app.agents.legal.schemas import LegalCheckResult, WebFinding
+from app.agents.legal.schemas import (
+    LegalCheckResult,
+    SearchedScope,
+    WebFinding,
+)
 from app.core.logging import get_logger
 from app.services.cnj_datajud_service import DataJudService, get_datajud_service
 from app.services.firecrawl_service import FirecrawlService, get_firecrawl_service
@@ -31,18 +35,31 @@ def run_legal_check(
     property_row: dict,
     datajud: DataJudService | None = None,
     firecrawl: FirecrawlService | None = None,
+    scope: SearchedScope = "national",
+    force_refresh: bool = False,
 ) -> LegalCheckResult:
     """Executa o pipeline legal sobre o property dado.
 
     ``datajud``/``firecrawl`` opcionais — úteis para testes injetarem mock;
     default usa os singletons. Web search é defensiva (falha → ``[]``).
+    ``scope``/``force_refresh`` controlam a busca DataJud:
+      * ``scope="national"`` (default): consulta os 57 tribunais.
+      * ``scope="state"``: legado — apenas TJ + TRTs da UF do imóvel.
+      * ``force_refresh=True``: ignora o cache em memória.
     """
     started = datetime.now(timezone.utc)
     t0 = time.perf_counter()
 
     dj = datajud or get_datajud_service()
+    fc = firecrawl or get_firecrawl_service()
 
-    owner = check_processes(property_row=property_row, datajud=dj)
+    owner = check_processes(
+        property_row=property_row,
+        datajud=dj,
+        firecrawl=fc,
+        scope=scope,
+        force_refresh=force_refresh,
+    )
     matricula = check_matricula(property_row=property_row)
 
     # Web search (Firecrawl) por anulatórias/embargos — só quando temos

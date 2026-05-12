@@ -797,29 +797,36 @@ class SupabaseService:
         return public_url
 
     # ------------------------------------------------------------------ #
-    # Storage — bucket privado "legal-documents" (Agente Legal)
+    # Storage — bucket privado "legal-documents" (gerenciador de docs)
     # ------------------------------------------------------------------ #
-    def upload_legal_pdf(
+    def upload_legal_document(
         self,
         *,
         property_id: str,
         content: bytes,
+        filename: str,
+        content_type: str,
     ) -> str | None:
-        """Sobe um PDF de matrícula e devolve o PATH dentro do bucket.
+        """Sobe um documento ao bucket privado e devolve o PATH.
 
-        Bucket é **privado** — frontend NUNCA recebe URL pública. Para
-        renderizar, peça uma signed URL via :meth:`get_legal_pdf_signed_url`.
-        Path: ``{property_id}/matricula_{epoch}.pdf`` (não usamos `upsert`
-        porque queremos manter histórico de uploads). Falha silenciosa.
+        Path: ``{property_id}/{uuid4}.{ext}`` — preserva a extensão original
+        para download bonito. ``upsert`` não é usado (queremos histórico).
+        Bucket é privado: frontend recebe signed URL via
+        :meth:`get_legal_pdf_signed_url` (que aceita qualquer path do bucket).
+        Falha silenciosa: log + ``None``.
         """
-        import time as _t
+        import uuid as _uuid
+        from pathlib import PurePosixPath
 
-        path = f"{property_id}/matricula_{int(_t.time())}.pdf"
+        ext = PurePosixPath(filename or "").suffix.lower()
+        if not ext:
+            ext = ".bin"
+        path = f"{property_id}/{_uuid.uuid4()}{ext}"
         try:
             self._client.storage.from_(self.LEGAL_DOCUMENTS_BUCKET).upload(
                 path,
                 content,
-                file_options={"content-type": "application/pdf"},
+                file_options={"content-type": content_type or "application/octet-stream"},
             )
         except Exception as exc:
             logger.warning(
@@ -834,8 +841,62 @@ class SupabaseService:
             bucket=self.LEGAL_DOCUMENTS_BUCKET,
             path=path,
             bytes=len(content),
+            content_type=content_type,
         )
         return path
+
+    def upload_legal_pdf(
+        self,
+        *,
+        property_id: str,
+        content: bytes,
+    ) -> str | None:
+        """Compat shim — sobe um PDF de matrícula (formato legado).
+
+        Mantido para retrocompat com chamadas antigas (endpoint legacy
+        ``POST /legal/matricula``). Novas integrações devem usar
+        :meth:`upload_legal_document` diretamente.
+        """
+        return self.upload_legal_document(
+            property_id=property_id,
+            content=content,
+            filename="matricula.pdf",
+            content_type="application/pdf",
+        )
+
+    def delete_legal_object(self, path: str) -> bool:
+        """Remove um objeto do bucket privado. Idempotente."""
+        try:
+            self._client.storage.from_(self.LEGAL_DOCUMENTS_BUCKET).remove([path])
+        except Exception as exc:
+            logger.warning(
+                "supabase.storage.legal_delete_failed",
+                bucket=self.LEGAL_DOCUMENTS_BUCKET,
+                path=path,
+                error=str(exc),
+            )
+            return False
+        return True
+
+    def download_legal_object(self, path: str) -> bytes | None:
+        """Baixa o conteúdo binário de um objeto do bucket.
+
+        Necessário para a análise consolidada extrair texto/render dos PDFs.
+        """
+        try:
+            data = (
+                self._client.storage.from_(self.LEGAL_DOCUMENTS_BUCKET)
+                .download(path)
+            )
+        except Exception as exc:
+            logger.warning(
+                "supabase.storage.legal_download_failed",
+                bucket=self.LEGAL_DOCUMENTS_BUCKET,
+                path=path,
+                error=str(exc),
+            )
+            return None
+        return data if isinstance(data, (bytes, bytearray)) else None
 
     def get_legal_pdf_signed_url(
         self,
@@ -903,6 +964,167 @@ class SupabaseService:
         except Exception as exc:
             raise SupabaseError(
                 f"Falha ao buscar última deep_analysis: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
+    # property_documents (gerenciador genérico de docs por imóvel)
+    # ------------------------------------------------------------------ #
+    def insert_property_document(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            res = (
+                self._client.table("property_documents")
+                .insert(payload)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao inserir property_document: {exc}"
+            ) from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError("Insert de property_document não retornou row.")
+        return rows[0]
+
+    def list_property_documents(self, property_id: str) -> list[dict[str, Any]]:
+        try:
+            res = (
+                self._client.table("property_documents")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao listar property_documents: {exc}"
+            ) from exc
+        return list(res.data or [])
+
+    def get_property_document(self, document_id: str) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("property_documents")
+                .select("*")
+                .eq("id", document_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar property_document {document_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    def get_property_documents_by_ids(
+        self, document_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Busca em lote — preserva ordem do request best-effort."""
+        if not document_ids:
+            return []
+        try:
+            res = (
+                self._client.table("property_documents")
+                .select("*")
+                .in_("id", document_ids)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar property_documents em lote: {exc}"
+            ) from exc
+        return list(res.data or [])
+
+    def delete_property_document(self, document_id: str) -> dict[str, Any] | None:
+        """Remove a row e retorna o registro deletado (para apagar o objeto
+        no bucket em seguida). NÃO apaga o objeto do Storage — caller decide.
+        """
+        try:
+            res = (
+                self._client.table("property_documents")
+                .delete()
+                .eq("id", document_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao deletar property_document {document_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    def get_property_documents_total_size(self, property_id: str) -> int:
+        """Soma de ``size_bytes`` dos docs de uma property (para cap soft)."""
+        try:
+            res = (
+                self._client.table("property_documents")
+                .select("size_bytes")
+                .eq("property_id", property_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao somar tamanho de property_documents: {exc}"
+            ) from exc
+        rows = res.data or []
+        return sum(int(r.get("size_bytes") or 0) for r in rows)
+
+    # ------------------------------------------------------------------ #
+    # document_analyses (relatórios consolidados sob demanda)
+    # ------------------------------------------------------------------ #
+    def insert_document_analysis(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            res = (
+                self._client.table("document_analyses")
+                .insert(payload)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao inserir document_analysis: {exc}"
+            ) from exc
+        rows = res.data or []
+        if not rows:
+            raise SupabaseError("Insert de document_analysis não retornou row.")
+        return rows[0]
+
+    def get_latest_document_analysis(
+        self, property_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("document_analyses")
+                .select("*")
+                .eq("property_id", property_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar última document_analysis: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    def get_document_analysis(
+        self, analysis_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("document_analyses")
+                .select("*")
+                .eq("id", analysis_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao buscar document_analysis {analysis_id}: {exc}"
             ) from exc
         rows = res.data or []
         return rows[0] if rows else None

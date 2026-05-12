@@ -4,11 +4,13 @@ import { useCallback, useState } from "react";
 
 import {
   api,
+  type DocumentAnalysisRow,
   type LegalCheckResult,
   type Property,
+  type PropertyDocument,
 } from "@/lib/api";
 
-import { MatriculaUploadCard } from "./MatriculaUploadCard";
+import { DocumentsSummaryCard } from "./DocumentsSummaryCard";
 import { OwnerIdentityCard } from "./OwnerIdentityCard";
 import { ProcessesList } from "./ProcessesList";
 import { WebFindingsCard } from "./WebFindingsCard";
@@ -18,21 +20,29 @@ type LegalCheckRow = LegalCheckResult & { id?: string | null };
 export function LegalView({
   property,
   initialCheck,
+  documents,
+  latestAnalysis,
 }: {
   property: Property;
   initialCheck: LegalCheckRow | null;
+  documents: PropertyDocument[];
+  latestAnalysis: DocumentAnalysisRow | null;
 }) {
   const [check, setCheck] = useState<LegalCheckRow | null>(initialCheck);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
   const handleRun = useCallback(
-    async (cpfCnpj: string | null) => {
+    async (params: {
+      owner_name: string | null;
+      owner_cpf_cnpj: string | null;
+    }) => {
       setRunning(true);
       setRunError(null);
       try {
         const res = await api.runLegalCheck(property.id, {
-          owner_cpf_cnpj: cpfCnpj,
+          owner_name: params.owner_name,
+          owner_cpf_cnpj: params.owner_cpf_cnpj,
         });
         setCheck(res);
       } catch (err) {
@@ -40,46 +50,6 @@ export function LegalView({
       } finally {
         setRunning(false);
       }
-    },
-    [property.id],
-  );
-
-  const handleUploaded = useCallback(
-    (matriculaOcr: LegalCheckRow["matricula_ocr"], pdfUrl: string | null) => {
-      setCheck((prev) => {
-        const base: LegalCheckRow =
-          prev ?? ({
-            property_id: property.id,
-            started_at: new Date().toISOString(),
-            completed_at: new Date().toISOString(),
-            duration_ms: 0,
-            owner_processes: {
-              status: "skipped",
-              skipped_reason: "execute a análise para listar processos",
-              cpf_cnpj: null,
-              tribunal: null,
-              total_hits: 0,
-              critical_hits: 0,
-              critical_labels: [],
-              sample_processes: [],
-            },
-            matricula_check: {
-              status: "skipped",
-              skipped_reason: null,
-              matricula: null,
-              registry_office: null,
-              onus_summary: [],
-              fetched_at: null,
-            },
-            has_critical_findings: false,
-            critical_findings: [],
-          } as LegalCheckRow);
-        return {
-          ...base,
-          matricula_ocr: matriculaOcr,
-          matricula_pdf_signed_url: pdfUrl,
-        };
-      });
     },
     [property.id],
   );
@@ -99,11 +69,10 @@ export function LegalView({
           onRun={handleRun}
         />
 
-        <MatriculaUploadCard
+        <DocumentsSummaryCard
           propertyId={property.id}
-          existing={check?.matricula_ocr ?? null}
-          pdfSignedUrl={check?.matricula_pdf_signed_url ?? null}
-          onUploaded={handleUploaded}
+          documents={documents}
+          latestAnalysis={latestAnalysis}
         />
       </aside>
 

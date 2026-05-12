@@ -1,6 +1,12 @@
 "use client";
 
-import { AlertTriangle, ExternalLink, Gavel } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Gavel,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +57,7 @@ export function ProcessesList({
   check: LegalCheckRow | null;
 }) {
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [tribunalsOpen, setTribunalsOpen] = useState(false);
 
   const all: LegalProcessSummary[] = useMemo(() => {
     if (!check) return [];
@@ -159,6 +166,11 @@ export function ProcessesList({
                       {p.data_ajuizamento && (
                         <span>{p.data_ajuizamento.slice(0, 10)}</span>
                       )}
+                      {(p.matched_by === "nome" || p.matched_by === "both") && (
+                        <Badge variant="outline" className="text-[9px]">
+                          {p.matched_by === "both" ? "CPF + nome" : "por nome"}
+                        </Badge>
+                      )}
                     </div>
                   </li>
                 );
@@ -174,22 +186,15 @@ export function ProcessesList({
 
         {check?.owner_processes?.tribunals_queried &&
           check.owner_processes.tribunals_queried.length > 0 && (
-            <p className="text-[10px] text-muted-foreground">
-              Tribunais consultados:{" "}
-              {check.owner_processes.tribunals_queried
-                .map((t) => t.toUpperCase())
-                .join(" · ")}
-              {check.owner_processes.tribunals_failed &&
-                check.owner_processes.tribunals_failed.length > 0 && (
-                  <>
-                    {" · "}
-                    falharam:{" "}
-                    {check.owner_processes.tribunals_failed
-                      .map((t) => t.toUpperCase())
-                      .join(", ")}
-                  </>
-                )}
-            </p>
+            <TribunalsPanel
+              open={tribunalsOpen}
+              onToggle={() => setTribunalsOpen((v) => !v)}
+              queried={check.owner_processes.tribunals_queried}
+              failed={check.owner_processes.tribunals_failed ?? []}
+              hitsPerTribunal={check.owner_processes.hits_per_tribunal ?? {}}
+              scope={check.owner_processes.searched_scope}
+              searchedByName={!!check.owner_processes.searched_by_name}
+            />
           )}
 
         {check?.owner_processes?.cpf_cnpj && (
@@ -205,5 +210,94 @@ export function ProcessesList({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function TribunalsPanel({
+  open,
+  onToggle,
+  queried,
+  failed,
+  hitsPerTribunal,
+  scope,
+  searchedByName,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  queried: string[];
+  failed: string[];
+  hitsPerTribunal: Record<string, number>;
+  scope?: "national" | "state";
+  searchedByName: boolean;
+}) {
+  const withHits = queried.filter((t) => (hitsPerTribunal[t] ?? 0) > 0).length;
+  const sortedQueried = [...queried].sort((a, b) => {
+    const ha = hitsPerTribunal[a] ?? 0;
+    const hb = hitsPerTribunal[b] ?? 0;
+    if (ha !== hb) return hb - ha;
+    return a.localeCompare(b);
+  });
+
+  return (
+    <div className="rounded-md border bg-muted/30 text-[11px]">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-muted-foreground hover:bg-muted"
+      >
+        <span>
+          <strong>{queried.length}</strong> tribunais consultados ·{" "}
+          <strong>{withHits}</strong> com hits
+          {failed.length > 0 && (
+            <>
+              {" "}
+              · <span className="text-destructive">{failed.length} falha(s)</span>
+            </>
+          )}
+          {scope === "national" && " · escopo nacional"}
+          {scope === "state" && " · escopo UF"}
+          {searchedByName && " · busca por nome ativa"}
+        </span>
+        {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+      </button>
+
+      {open && (
+        <div className="border-t p-2">
+          {sortedQueried.length > 0 && (
+            <div className="mb-2">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Consultados ({sortedQueried.length})
+              </div>
+              <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5 sm:grid-cols-3">
+                {sortedQueried.map((t) => {
+                  const h = hitsPerTribunal[t] ?? 0;
+                  return (
+                    <li
+                      key={t}
+                      className={`flex items-baseline justify-between gap-2 ${
+                        h > 0 ? "font-medium" : "text-muted-foreground"
+                      }`}
+                    >
+                      <span className="uppercase">{t}</span>
+                      <span>{h}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {failed.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+                Falharam ({failed.length})
+              </div>
+              <p className="text-[10px] text-destructive">
+                {failed.map((t) => t.toUpperCase()).join(" · ")}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

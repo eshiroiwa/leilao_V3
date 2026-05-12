@@ -1,4 +1,10 @@
-import { api, type LegalCheckResult, type Property } from "@/lib/api";
+import {
+  api,
+  type DocumentAnalysisRow,
+  type LegalCheckResult,
+  type Property,
+  type PropertyDocument,
+} from "@/lib/api";
 
 import { LegalView } from "./_components/LegalView";
 
@@ -11,7 +17,7 @@ export default async function PropertyLegalPage({
 }) {
   const { id } = await params;
 
-  const [propertyList, latestCheck] = await Promise.all([
+  const [propertyList, latestCheck, documents, latestAnalysis] = await Promise.all([
     api.listProperties({ limit: 200 }).catch(() => [] as Property[]),
     api
       .getLatestLegalCheck(id)
@@ -19,6 +25,10 @@ export default async function PropertyLegalPage({
         () =>
           null as (LegalCheckResult & { id?: string | null }) | null,
       ),
+    api.listPropertyDocuments(id).catch(() => [] as PropertyDocument[]),
+    api
+      .getLatestDocumentAnalysis(id)
+      .catch(() => null as DocumentAnalysisRow | null),
   ]);
 
   const property = propertyList.find((p) => p.id === id) ?? null;
@@ -31,13 +41,18 @@ export default async function PropertyLegalPage({
           Análise jurídica
         </h2>
         <p className="text-sm text-muted-foreground">
-          Processos do proprietário (CNJ DataJud), ônus da matrícula e achados
-          na web. Anulatórias de leilão e embargos à arrematação são
-          destacados como críticos.
+          Processos do proprietário (CNJ DataJud), achados na web e análise
+          consolidada dos documentos anexados. Para anexar matrícula, edital,
+          laudo e outros documentos, use a aba <strong>Documentos</strong>.
         </p>
       </div>
 
-      <LegalView property={property} initialCheck={latestCheck} />
+      <LegalView
+        property={property}
+        initialCheck={latestCheck}
+        documents={documents}
+        latestAnalysis={latestAnalysis}
+      />
     </div>
   );
 }

@@ -1,6 +1,12 @@
 "use client";
 
-import { BarChart3, FileText, Gavel, Sparkles } from "lucide-react";
+import {
+  BarChart3,
+  FileText,
+  FolderOpen,
+  Gavel,
+  Sparkles,
+} from "lucide-react";
 import type { Route } from "next";
 
 import { TabsNav } from "@/components/ui/tabs";
@@ -34,6 +40,12 @@ export function PropertyTabs({ propertyId }: { propertyId: string }) {
           label: "Jurídico",
           icon: Gavel,
           match: (p) => p.startsWith(`${base}/legal`),
+        },
+        {
+          href: `${base}/documents` as Route,
+          label: "Documentos",
+          icon: FolderOpen,
+          match: (p) => p.startsWith(`${base}/documents`),
         },
       ]}
     />

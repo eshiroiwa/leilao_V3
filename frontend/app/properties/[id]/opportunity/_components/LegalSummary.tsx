@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import {
   api,
+  type DocumentAnalysisRow,
   type LegalCheckResult,
   type Property,
 } from "@/lib/api";
@@ -21,22 +22,26 @@ import { maskCpfCnpj } from "@/lib/cpf-cnpj";
 type LegalCheckRow = LegalCheckResult & { id?: string | null };
 
 /** Sumário compacto da análise jurídica — substitui o antigo `LegalCheckCard`
- * dentro do `OpportunityView`. Linka para a aba "Jurídico" completa.
+ * dentro do `OpportunityView`. Prioriza o relatório consolidado novo
+ * (`document_analyses`) e cai para o `legal_checks.matricula_ocr` legado
+ * quando não há análise consolidada.
  */
 export function LegalSummary({ property }: { property: Property }) {
   const [check, setCheck] = useState<LegalCheckRow | null>(null);
+  const [analysis, setAnalysis] = useState<DocumentAnalysisRow | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api
-      .getLatestLegalCheck(property.id)
-      .then((row) => {
-        if (!cancelled) setCheck(row);
-      })
-      .catch(() => {
-        if (!cancelled) setCheck(null);
+    Promise.all([
+      api.getLatestLegalCheck(property.id).catch(() => null),
+      api.getLatestDocumentAnalysis(property.id).catch(() => null),
+    ])
+      .then(([row, analysisRow]) => {
+        if (cancelled) return;
+        setCheck(row);
+        setAnalysis(analysisRow);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -50,11 +55,26 @@ export function LegalSummary({ property }: { property: Property }) {
     `/properties/${encodeURIComponent(property.id)}/legal` as Route;
   const total = check?.owner_processes?.total_hits ?? 0;
   const critical = check?.owner_processes?.critical_hits ?? 0;
-  const ocr = check?.matricula_ocr ?? null;
-  const liens = ocr?.liens ?? [];
+
+  // Prioriza relatório consolidado novo; cai para matricula_ocr legado.
+  const report = analysis?.report ?? null;
+  const liensCount = report
+    ? report.liens.length
+    : (check?.matricula_ocr?.liens?.length ?? 0);
+  const hasMatriculaData =
+    !!report ||
+    (check?.matricula_ocr && (check.matricula_ocr.owner_name || liensCount > 0));
+  const showCritical =
+    report?.critical_findings || check?.has_critical_findings;
+  const criticalText = report
+    ? report.critical_findings_summary[0]
+    : check?.critical_findings?.[0];
+  const extraCritical = report
+    ? Math.max(report.critical_findings_summary.length - 1, 0)
+    : Math.max((check?.critical_findings?.length ?? 0) - 1, 0);
 
   return (
-    <Card className={check?.has_critical_findings ? "border-danger/40" : ""}>
+    <Card className={showCritical ? "border-danger/40" : ""}>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Gavel className="size-4" />
@@ -64,13 +84,13 @@ export function LegalSummary({ property }: { property: Property }) {
       <CardContent className="space-y-2 text-sm">
         {loading ? (
           <p className="text-xs text-muted-foreground">Carregando…</p>
-        ) : !check ? (
+        ) : !check && !analysis ? (
           <p className="text-xs text-muted-foreground">
             Nenhuma análise executada ainda.
           </p>
         ) : (
           <div className="space-y-1.5">
-            {check.owner_processes?.cpf_cnpj && (
+            {check?.owner_processes?.cpf_cnpj && (
               <Row
                 label="Proprietário (doc.)"
                 value={maskCpfCnpj(check.owner_processes.cpf_cnpj)}
@@ -82,17 +102,17 @@ export function LegalSummary({ property }: { property: Property }) {
               danger={critical > 0}
             />
             <Row
-              label="Matrícula"
+              label="Documentos"
               value={
-                ocr
-                  ? ocr.is_clear
-                    ? "Livre de ônus"
-                    : `${liens.length} ônus`
-                  : "Não enviada"
+                report
+                  ? `${report.documents_analyzed.length} analisado(s) · ${liensCount} ônus`
+                  : hasMatriculaData
+                    ? `${liensCount} ônus`
+                    : "Sem análise"
               }
-              danger={liens.length > 0}
+              danger={liensCount > 0}
             />
-            {check.web_findings && check.web_findings.length > 0 && (
+            {check?.web_findings && check.web_findings.length > 0 && (
               <Row
                 label="Web"
                 value={`${check.web_findings.length} achado(s)`}
@@ -100,13 +120,12 @@ export function LegalSummary({ property }: { property: Property }) {
               />
             )}
 
-            {check.has_critical_findings && (
+            {showCritical && (
               <div className="flex items-start gap-1.5 rounded-md border border-danger/40 bg-danger-50 p-2 text-[11px] text-danger-700">
                 <AlertTriangle className="mt-0.5 size-3 shrink-0" />
                 <span>
-                  {check.critical_findings[0] ?? "Achados críticos detectados."}
-                  {check.critical_findings.length > 1 &&
-                    ` (+${check.critical_findings.length - 1})`}
+                  {criticalText ?? "Achados críticos detectados."}
+                  {extraCritical > 0 && ` (+${extraCritical})`}
                 </span>
               </div>
             )}

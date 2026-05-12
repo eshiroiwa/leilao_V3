@@ -1,6 +1,6 @@
 """Cliente da API Pública do DataJud (CNJ).
 
-Consulta metadados de processos judiciais em todos os tribunais do país.
+Consulta METADADOS de processos judiciais em todos os tribunais do país.
 A API é GRATUITA mas exige uma "chave pública" obtida no portal do CNJ
 (Portaria CNJ 160/2020). A chave é a MESMA para todos os consumidores —
 é só um identificador de uso, não um segredo. Pode vir de env var
@@ -9,35 +9,40 @@ A API é GRATUITA mas exige uma "chave pública" obtida no portal do CNJ
 Cada tribunal expõe seu próprio endpoint:
     https://api-publica.datajud.cnj.jus.br/api_publica_{TRIBUNAL}/_search
 
-Onde ``{TRIBUNAL}`` é o slug do tribunal (ex.: ``tjsp``, ``tjrj``).
-NÃO há endpoint federado — para "todos os processos do CPF X" seria
-preciso iterar pelos 90+ tribunais. Por isso defaultamos para o TJ da
-UF do imóvel (provável foro do processo de execução que originou o leilão).
+LIMITAÇÃO IMPORTANTE (descoberta em 2026-05-12): a API pública **não
+expõe o campo `partes`** no ``_source`` (LGPD). O índice ElasticSearch
+público contém apenas: ``numeroProcesso``, ``classe``, ``assuntos``,
+``movimentos``, ``orgaoJulgador``, ``sistema``, ``tribunal``, ``grau``,
+``nivelSigilo``, ``dataAjuizamento``. **Não há nome nem CPF/CNPJ das
+partes** — buscar por ``partes.documento`` ou ``partes.nome`` sempre
+retorna 0 hits.
 
-Uso no Agente Legal:
-  1. Recebe ``owner_cpf_cnpj`` do property (extraído pelo Scraper).
-  2. Consulta TJ-UF por documento da parte.
-  3. Classifica processos em "críticos" (execuções fiscais, execução de
-     título extrajudicial, ações de despejo, indisponibilidade) vs
-     "neutros" (outros).
-  4. Devolve contagem + amostra dos críticos como red_flags.
+Por isso o agente legal NÃO usa DataJud para descobrir processos a
+partir do CPF/nome. DataJud fica reservado para **enriquecer** um
+número de processo já conhecido (vindo do edital, por exemplo) ou
+classificar processos vindos de outras fontes (Firecrawl).
 
-Cache em memória por (cpf_cnpj, tribunal): TTL 7 dias.
+Cache em memória por (numero_processo, tribunal): TTL 7 dias.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Final
+from typing import Final, Literal
 
 import httpx
 
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Matched-by indica via qual chave (CPF ou nome) o processo foi identificado.
+# Útil para a UI sinalizar "match por nome" como suspeito (homônimo possível).
+MatchedBy = Literal["cpf", "nome", "both"]
 
 
 class DataJudServiceError(RuntimeError):
@@ -177,6 +182,76 @@ _TRT_BY_STATE: Final[dict[str, tuple[str, ...]]] = {
     "TO": ("trt10",),
 }
 
+# Justiça Federal (TRFs) — a API DataJud expõe 6 regiões. Sem mapeamento por
+# UF: na consulta nacional varremos os 6. Cobre execuções fiscais federais
+# (União/INSS/Receita Federal) que NÃO aparecem nos TJs estaduais.
+_TRFS: Final[tuple[str, ...]] = ("trf1", "trf2", "trf3", "trf4", "trf5", "trf6")
+
+# Tribunais superiores cobertos pela API DataJud.
+_SUPERIOR: Final[tuple[str, ...]] = ("stj",)
+
+
+def all_tribunals() -> list[str]:
+    """Lista canônica nacional: 26 TJs + 24 TRTs distintos + 6 TRFs + STJ."""
+    tribs: list[str] = list(_TJ_BY_STATE.values())
+    seen: set[str] = set(tribs)
+    for trts in _TRT_BY_STATE.values():
+        for t in trts:
+            if t not in seen:
+                tribs.append(t)
+                seen.add(t)
+    for t in _TRFS:
+        if t not in seen:
+            tribs.append(t)
+            seen.add(t)
+    for t in _SUPERIOR:
+        if t not in seen:
+            tribs.append(t)
+            seen.add(t)
+    return tribs
+
+
+# Códigos do segmento J (Justiça) + TR (tribunal) embutidos no número CNJ
+# unificado (Resolução CNJ 65/2008). Formato:
+#   NNNNNNN-DD.AAAA.J.TR.OOOO
+# J = 1 STF · 2 CNJ · 3 STJ · 4 Federal · 5 Trabalho · 8 Estadual · …
+# Para J=8 (Estadual), TR é o código do TJ (1=AC, 2=AL, …, 26=SP, 27=TO).
+# Para J=5 (Trabalho), TR é o número do TRT (1=TRT1 …).
+# Para J=4 (Federal), TR é a região do TRF (1=TRF1 … 6=TRF6).
+# Para J=3 (STJ) ou J=1 (STF), TR é fixo "00".
+_TJ_BY_CNJ_CODE: Final[dict[int, str]] = {
+    1: "tjac", 2: "tjal", 3: "tjam", 4: "tjap", 5: "tjba", 6: "tjce",
+    7: "tjdft", 8: "tjes", 9: "tjgo", 10: "tjma", 11: "tjms", 12: "tjmt",
+    13: "tjmg", 14: "tjpa", 15: "tjpb", 16: "tjpe", 17: "tjpi", 18: "tjpr",
+    19: "tjrj", 20: "tjrn", 21: "tjro", 22: "tjrr", 23: "tjrs", 24: "tjsc",
+    25: "tjse", 26: "tjsp", 27: "tjto",
+}
+
+
+def tribunal_from_cnj_number(numero: str) -> str | None:
+    """Decodifica o slug do tribunal embutido em um número CNJ unificado.
+
+    Aceita formato com ou sem pontuação. Retorna ``None`` quando o número
+    não bate o padrão ou o segmento (J, TR) não é coberto pela API DataJud.
+
+    Ex.: ``"0012345-67.2024.8.26.0001"`` → ``"tjsp"``.
+    """
+    digits = "".join(c for c in (numero or "") if c.isdigit())
+    if len(digits) != 20:
+        return None
+    j = int(digits[13])
+    tr = int(digits[14:16])
+    if j == 8:  # Estadual
+        return _TJ_BY_CNJ_CODE.get(tr)
+    if j == 5:  # Trabalho (TRTs 1-24)
+        return f"trt{tr}" if 1 <= tr <= 24 else None
+    if j == 4:  # Federal (TRFs 1-6)
+        slug = f"trf{tr}"
+        return slug if slug in _TRFS else None
+    if j == 3:  # STJ
+        return "stj"
+    return None
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessHit:
@@ -190,6 +265,7 @@ class ProcessHit:
     tribunal: str
     is_critical: bool
     category: str = "outro"
+    matched_by: MatchedBy = "cpf"
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +288,11 @@ class DataJudService:
             "CNJ_DATAJUD_API_KEY", _DEFAULT_PUBLIC_KEY
         )
         self._timeout_s = timeout_s
-        self._cache: dict[tuple[str, str], tuple[float, DataJudQueryResult]] = {}
+        # Cache key: (numero_processo, "", tribunal). O segundo slot é
+        # reservado (uso futuro caso a busca evolua além de número).
+        # TTL: 7 dias.
+        self._cache: dict[tuple[str, str, str], tuple[float, DataJudQueryResult]] = {}
+        self._cache_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     def tribunal_for_state(self, state: str | None) -> str | None:
@@ -229,9 +309,7 @@ class DataJudService:
         """Lista de tribunais a consultar para uma UF: TJ-UF + TRT(s).
 
         Devolve ``[]`` quando a UF é inválida/desconhecida. Para SP devolve
-        ``[tjsp, trt2, trt15]`` — interior de SP fica no TRT15 (sede em
-        Campinas), capital e região metropolitana no TRT2. Outras UFs têm
-        apenas um TRT por jurisdição.
+        ``[tjsp, trt2, trt15]``.
         """
         if not state:
             return []
@@ -243,123 +321,130 @@ class DataJudService:
         out.extend(_TRT_BY_STATE.get(uf, ()))
         return out
 
+    def all_tribunals(self) -> list[str]:
+        """Atalho de instância para :func:`all_tribunals`."""
+        return all_tribunals()
+
     # ------------------------------------------------------------------ #
-    def search_by_document(
+    def search_by_number(
         self,
-        cpf_cnpj: str,
+        numero_processo: str,
         *,
         tribunal: str,
-        size: int = 100,
-    ) -> DataJudQueryResult:
-        """Busca processos onde a PARTE tem o documento informado.
+        force_refresh: bool = False,
+    ) -> ProcessHit | None:
+        """Busca um processo específico pelo seu número CNJ.
 
-        Devolve até ``size`` processos, ordenados por data de ajuizamento
-        descendente. Levanta :class:`DataJudServiceError` em erro de rede;
-        cache hit dentro de 7 dias evita o round-trip.
+        Este é o único caso de uso útil da API DataJud pública hoje
+        (o índice não expõe partes — ver docstring do módulo). Use quando
+        o número do processo for conhecido (vindo do edital, decisão ou
+        descoberta por outra fonte).
+
+        Retorna ``ProcessHit`` ou ``None`` se não encontrado.
+        Levanta :class:`DataJudServiceError` em erro de rede/JSON.
         """
-        digits = "".join(c for c in cpf_cnpj or "" if c.isdigit())
-        if len(digits) not in (11, 14):
-            raise DataJudServiceError(
-                f"CPF/CNPJ inválido (esperado 11 ou 14 dígitos, recebido {len(digits)})"
-            )
+        numero = "".join(c for c in (numero_processo or "") if c.isdigit())
+        if not numero:
+            raise DataJudServiceError("número de processo vazio")
 
-        cache_key = (digits, tribunal)
-        cached = self._cache.get(cache_key)
-        if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
-            return cached[1]
+        cache_key = (numero, "", tribunal)
+        if not force_refresh:
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+            if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
+                procs = cached[1].processes
+                return procs[0] if procs else None
 
+        body = {
+            "size": 1,
+            "query": {"match": {"numeroProcesso": numero}},
+        }
+        payload = self._http_search(tribunal=tribunal, body=body)
+        hits = (payload.get("hits") or {}).get("hits") or []
+        hit: ProcessHit | None = None
+        if hits:
+            src = hits[0].get("_source") or {}
+            hit = self._parse_hit(src=src, tribunal=tribunal)
+
+        result = DataJudQueryResult(
+            cpf_cnpj="",
+            tribunal=tribunal,
+            total_hits=1 if hit else 0,
+            critical_hits=1 if hit and hit.is_critical else 0,
+            processes=[hit] if hit else [],
+            critical_labels=[],
+        )
+        with self._cache_lock:
+            self._cache[cache_key] = (time.time(), result)
+        return hit
+
+    # ------------------------------------------------------------------ #
+    # Internos
+    # ------------------------------------------------------------------ #
+    def _http_search(self, *, tribunal: str, body: dict) -> dict:
+        """POST contra o endpoint de um tribunal com 1 retry em 429/503."""
         url = f"{_BASE_URL}/api_publica_{tribunal}/_search"
         headers = {
             "Authorization": f"APIKey {self._api_key}",
             "Content-Type": "application/json",
         }
-        # Elasticsearch DSL: match no documento de qualquer parte. O
-        # campo padrão é ``partes.documento``.
-        body = {
-            "size": size,
-            "sort": [{"dataAjuizamento": {"order": "desc"}}],
-            "query": {"match": {"partes.documento": digits}},
-        }
-
-        logger.info("datajud.search.start", tribunal=tribunal, cpf_cnpj_digits=len(digits))
-        try:
-            r = httpx.post(url, headers=headers, json=body, timeout=self._timeout_s)
-            r.raise_for_status()
-            payload = r.json()
-        except httpx.HTTPError as exc:
-            logger.error("datajud.search.http_error", tribunal=tribunal, error=str(exc))
-            raise DataJudServiceError(f"DataJud HTTP erro: {exc}") from exc
-        except ValueError as exc:
-            logger.error("datajud.search.json_error", tribunal=tribunal, error=str(exc))
-            raise DataJudServiceError(f"DataJud JSON inválido: {exc}") from exc
-
-        hits_root = (payload.get("hits") or {})
-        total = hits_root.get("total")
-        # ``total`` pode ser int (legado) ou dict {"value": N} (ES 7+).
-        total_hits = total["value"] if isinstance(total, dict) else int(total or 0)
-        raw_hits = hits_root.get("hits") or []
-
-        processes: list[ProcessHit] = []
-        for h in raw_hits:
-            src = h.get("_source") or {}
-            classe = src.get("classe") or {}
-            classe_codigo = classe.get("codigo") if isinstance(classe, dict) else None
-            try:
-                classe_codigo_int = int(classe_codigo) if classe_codigo is not None else None
-            except (TypeError, ValueError):
-                classe_codigo_int = None
-            classe_nome = (
-                classe.get("nome") if isinstance(classe, dict) else None
-            )
-            category, is_critical_hit = categorize_process(
-                classe_codigo=classe_codigo_int,
-                classe_nome=classe_nome,
-                tribunal=tribunal,
-            )
-            processes.append(
-                ProcessHit(
-                    numero_processo=str(src.get("numeroProcesso") or ""),
-                    classe_codigo=classe_codigo_int,
-                    classe_nome=classe_nome,
-                    orgao_julgador=(
-                        (src.get("orgaoJulgador") or {}).get("nome")
-                        if isinstance(src.get("orgaoJulgador"), dict)
-                        else None
-                    ),
-                    data_ajuizamento=src.get("dataAjuizamento"),
-                    tribunal=tribunal,
-                    is_critical=is_critical_hit,
-                    category=category,
-                )
-            )
-
-        critical_hits = sum(1 for p in processes if p.is_critical)
-        labels_set: set[str] = set()
-        for p in processes:
-            if not p.is_critical:
-                continue
-            if p.category == "anulatoria":
-                labels_set.add("Ação anulatória de leilão")
-            elif p.category == "embargos_arrematacao":
-                labels_set.add("Embargos à arrematação")
-            elif p.category == "trabalhista":
-                labels_set.add("Processo trabalhista")
-            else:
-                lbl = _CRITICAL_CLASS_LABELS.get(p.classe_codigo or 0)
-                if lbl:
-                    labels_set.add(lbl)
-        critical_labels = sorted(labels_set)
-
-        result = DataJudQueryResult(
-            cpf_cnpj=digits,
+        logger.info(
+            "datajud.search.start",
             tribunal=tribunal,
-            total_hits=total_hits,
-            critical_hits=critical_hits,
-            processes=processes,
-            critical_labels=critical_labels,
+            size=body.get("size"),
+            from_offset=body.get("from", 0),
         )
-        self._cache[cache_key] = (time.time(), result)
-        return result
+        attempt = 0
+        while True:
+            try:
+                r = httpx.post(url, headers=headers, json=body, timeout=self._timeout_s)
+                if r.status_code in (429, 503) and attempt == 0:
+                    attempt += 1
+                    time.sleep(1.0)
+                    continue
+                r.raise_for_status()
+                return r.json()
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "datajud.search.http_error",
+                    tribunal=tribunal,
+                    error=str(exc),
+                    attempt=attempt,
+                )
+                raise DataJudServiceError(f"DataJud HTTP erro: {exc}") from exc
+            except ValueError as exc:
+                logger.warning(
+                    "datajud.search.json_error", tribunal=tribunal, error=str(exc)
+                )
+                raise DataJudServiceError(f"DataJud JSON inválido: {exc}") from exc
+
+    def _parse_hit(self, *, src: dict, tribunal: str) -> ProcessHit | None:
+        classe = src.get("classe") or {}
+        classe_codigo = classe.get("codigo") if isinstance(classe, dict) else None
+        try:
+            classe_codigo_int = int(classe_codigo) if classe_codigo is not None else None
+        except (TypeError, ValueError):
+            classe_codigo_int = None
+        classe_nome = classe.get("nome") if isinstance(classe, dict) else None
+        category, is_critical_hit = categorize_process(
+            classe_codigo=classe_codigo_int,
+            classe_nome=classe_nome,
+            tribunal=tribunal,
+        )
+        return ProcessHit(
+            numero_processo=str(src.get("numeroProcesso") or ""),
+            classe_codigo=classe_codigo_int,
+            classe_nome=classe_nome,
+            orgao_julgador=(
+                (src.get("orgaoJulgador") or {}).get("nome")
+                if isinstance(src.get("orgaoJulgador"), dict)
+                else None
+            ),
+            data_ajuizamento=src.get("dataAjuizamento"),
+            tribunal=tribunal,
+            is_critical=is_critical_hit,
+            category=category,
+        )
 
 
 @lru_cache(maxsize=1)
@@ -371,6 +456,9 @@ __all__ = [
     "DataJudService",
     "DataJudServiceError",
     "DataJudQueryResult",
+    "MatchedBy",
     "ProcessHit",
+    "all_tribunals",
     "get_datajud_service",
+    "tribunal_from_cnj_number",
 ]

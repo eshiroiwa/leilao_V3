@@ -138,6 +138,10 @@ export type Property = {
   auctioneer_fee_pct: number | null;
   // Identificadores jurídicos/registrais (Migration 013)
   owner_cpf_cnpj: string | null;
+  /** Nome do proprietário — pode vir do scraper (raw_extraction) ou ser
+   * informado manualmente pelo usuário no card "Identificação". É o sinal
+   * principal usado pela busca jurídica via Firecrawl. */
+  owner_name?: string | null;
   matricula: string | null;
   registry_office: string | null;
   inscricao_municipal: string | null;
@@ -468,6 +472,8 @@ export type ProcessCategory =
   | "trabalhista"
   | "outro";
 
+export type MatchedBy = "cpf" | "nome" | "both";
+
 export type LegalProcessSummary = {
   numero_processo: string;
   classe_codigo: number | null;
@@ -478,7 +484,12 @@ export type LegalProcessSummary = {
   is_critical: boolean;
   /** Categoria legível para filtro/destaque na UI. */
   category?: ProcessCategory;
+  /** Via qual chave o hit foi identificado. ``nome``/``both`` sinaliza
+   * possível homônimo (validar manualmente). */
+  matched_by?: MatchedBy;
 };
+
+export type SearchedScope = "national" | "state";
 
 export type LienType =
   | "hipoteca"
@@ -526,15 +537,22 @@ export type OwnerProcessesResult = {
   cpf_cnpj: string | null;
   /** Tribunal "principal" (primeiro com sucesso) — retrocompat. */
   tribunal: string | null;
-  /** Lista completa de tribunais consultados com sucesso (TJ + TRT). */
+  /** Lista completa de tribunais consultados com sucesso. */
   tribunals_queried?: string[];
   /** Tribunais que falharam na consulta (timeout/erro). */
   tribunals_failed?: string[];
+  /** Diagnóstico — total_hits reportado por cada tribunal. Pode estar
+   * ausente em rows antigas (pré-busca nacional). */
+  hits_per_tribunal?: Record<string, number>;
+  /** Escopo da consulta executada. */
+  searched_scope?: SearchedScope;
+  /** ``true`` se a consulta incluiu busca por nome (além do CPF). */
+  searched_by_name?: boolean;
   total_hits: number;
   critical_hits: number;
   critical_labels: string[];
   sample_processes: LegalProcessSummary[];
-  /** Lista COMPLETA (até 100/tribunal). Pode estar ausente em rows antigas. */
+  /** Lista COMPLETA (dedup por tribunal+número). Ausente em rows antigas. */
   processes_full?: LegalProcessSummary[];
 };
 
@@ -565,8 +583,105 @@ export type LegalCheckResult = {
 };
 
 export type MatriculaUploadResponse = {
-  matricula_ocr: MatriculaOcrResult;
+  matricula_ocr: MatriculaOcrResult | null;
   pdf_signed_url: string | null;
+  /** Presente quando o endpoint legacy /legal/matricula virou shim
+   * (Documentos refatorados — ver módulo PropertyDocument abaixo). */
+  document_id?: string | null;
+  migrated?: boolean;
+};
+
+// =====================================================================
+// Documentos (gerenciador genérico por property)
+// =====================================================================
+
+export type DocumentType =
+  | "matricula"
+  | "edital"
+  | "laudo_avaliacao"
+  | "pecas_processuais"
+  | "outros";
+
+export const DOC_TYPE_LABELS: Record<DocumentType, string> = {
+  matricula: "Matrícula",
+  edital: "Edital do leilão",
+  laudo_avaliacao: "Laudo de avaliação",
+  pecas_processuais: "Peças processuais",
+  outros: "Outros",
+};
+
+export type PropertyDocument = {
+  id: string;
+  property_id: string;
+  doc_type: DocumentType;
+  custom_label: string | null;
+  original_filename: string;
+  storage_path: string;
+  mime_type: string;
+  size_bytes: number;
+  uploaded_by: string | null;
+  created_at: string;
+  /** Anexada pelo backend nos endpoints de upload e list. */
+  signed_url: string | null;
+};
+
+export type LegalRiskSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type LegalRiskCategory =
+  | "onus"
+  | "processo_ativo"
+  | "irregularidade_registral"
+  | "vicio_edital"
+  | "ocupacao"
+  | "tributario"
+  | "outro";
+
+export type ReportLien = {
+  tipo: LienType;
+  credor: string | null;
+  valor_brl: number | null;
+  data_registro: string | null;
+  source_document_id: string;
+  notes: string | null;
+};
+
+export type LegalRisk = {
+  severity: LegalRiskSeverity;
+  category: LegalRiskCategory;
+  description: string;
+  source_document_ids: string[];
+};
+
+export type DocumentRef = {
+  document_id: string;
+  doc_type: DocumentType;
+  label: string;
+};
+
+export type DocumentAnalysisReport = {
+  documents_analyzed: DocumentRef[];
+  liens: ReportLien[];
+  risks: LegalRisk[];
+  critical_findings: boolean;
+  critical_findings_summary: string[];
+  recommendations: string[];
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  cost_usd: number;
+  extracted_at: string | null;
+  model: string;
+  notes: string | null;
+};
+
+export type DocumentAnalysisRow = {
+  id: string | null;
+  property_id: string;
+  document_ids: string[];
+  report: DocumentAnalysisReport;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  has_critical_findings: boolean;
+  cost_usd: number | null;
+  model: string;
+  created_at?: string;
 };
 
 export type OpportunityAnalysisRow = {
@@ -808,7 +923,16 @@ export const api = {
   // ===== Agente Legal =====
   runLegalCheck: (
     propertyId: string,
-    payload: { owner_cpf_cnpj?: string | null } = {},
+    payload: {
+      /** Nome do proprietário — sinal real de descoberta (Firecrawl). */
+      owner_name?: string | null;
+      /** CPF/CNPJ — registrado para auditoria, não influencia a busca. */
+      owner_cpf_cnpj?: string | null;
+      scope?: SearchedScope;
+      /** Quando ``true``, ignora o cache de 7 dias do DataJud e força hit
+       * fresco em todos os tribunais. */
+      force_refresh?: boolean;
+    } = {},
   ) =>
     request<LegalCheckResult & { id?: string | null }>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/legal-checks`,
@@ -862,6 +986,108 @@ export const api = {
     }
     return (await res.json()) as MatriculaUploadResponse;
   },
+
+  // ===== Documentos (gerenciador genérico) =====
+  listPropertyDocuments: (propertyId: string) =>
+    request<PropertyDocument[]>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/documents`,
+    ),
+
+  uploadPropertyDocument: async (
+    propertyId: string,
+    file: File,
+    docType: DocumentType,
+    customLabel?: string | null,
+  ): Promise<PropertyDocument> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("doc_type", docType);
+    if (customLabel) fd.append("custom_label", customLabel);
+
+    const url = `${API_BASE}/api/v1/properties/${encodeURIComponent(propertyId)}/documents`;
+    // Upload puro (sem análise) — 60s é confortável até para arquivos
+    // grandes em conexões medianas.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        body: fd,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error("Tempo limite (60s) excedido no upload — tente novamente.");
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Falha de rede ao enviar documento (${msg}).`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`API ${res.status}: ${txt || res.statusText}`);
+    }
+    return (await res.json()) as PropertyDocument;
+  },
+
+  getDocumentDownloadUrl: (documentId: string) =>
+    request<{ signed_url: string }>(
+      `/api/v1/documents/${encodeURIComponent(documentId)}/download`,
+    ),
+
+  deletePropertyDocument: (documentId: string) =>
+    request<{ deleted: boolean; id: string }>(
+      `/api/v1/documents/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" },
+    ),
+
+  analyzeDocuments: async (
+    propertyId: string,
+    documentIds: string[],
+  ): Promise<DocumentAnalysisRow> => {
+    const url = `${API_BASE}/api/v1/properties/${encodeURIComponent(propertyId)}/documents/analyze`;
+    // Análise consolidada pode tocar Vision com várias páginas — 3 min.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180_000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_ids: documentIds }),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          "Tempo limite (3 min) excedido na análise — tente novamente com menos documentos.",
+        );
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Falha de rede ao analisar documentos (${msg}).`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`API ${res.status}: ${txt || res.statusText}`);
+    }
+    return (await res.json()) as DocumentAnalysisRow;
+  },
+
+  getLatestDocumentAnalysis: (propertyId: string) =>
+    request<DocumentAnalysisRow | null>(
+      `/api/v1/properties/${encodeURIComponent(propertyId)}/documents/analyses/latest`,
+    ),
+
+  getDocumentAnalysis: (analysisId: string) =>
+    request<DocumentAnalysisRow>(
+      `/api/v1/documents/analyses/${encodeURIComponent(analysisId)}`,
+    ),
 
   // ===== Dashboard (home) =====
   getDashboard: (params?: {

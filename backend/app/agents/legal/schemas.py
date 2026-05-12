@@ -25,6 +25,9 @@ ProcessCategory = Literal[
 ]
 
 
+MatchedBy = Literal["cpf", "nome", "both"]
+
+
 class ProcessSummary(BaseModel):
     """Resumo de um processo encontrado no DataJud."""
 
@@ -38,15 +41,19 @@ class ProcessSummary(BaseModel):
     tribunal: str
     is_critical: bool = False
     category: ProcessCategory = "outro"
+    matched_by: MatchedBy = "cpf"
+
+
+SearchedScope = Literal["national", "state"]
 
 
 class OwnerProcessesResult(BaseModel):
     """Saída do nó CHECK_PROCESSES (CNJ DataJud por CPF/CNPJ).
 
     ``tribunals_queried`` / ``tribunals_failed`` substituem o campo
-    singular ``tribunal`` em consultas multi-tribunais (TJ + TRT). O campo
-    ``tribunal`` é mantido como **principal** (primeiro consultado com
-    sucesso) por retrocompat com rows persistidas antes desta mudança.
+    singular ``tribunal`` em consultas multi-tribunais. O campo ``tribunal``
+    é mantido como **principal** (primeiro consultado com sucesso) por
+    retrocompat com rows persistidas antes desta mudança.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -57,13 +64,20 @@ class OwnerProcessesResult(BaseModel):
     tribunal: str | None = None
     tribunals_queried: list[str] = Field(default_factory=list)
     tribunals_failed: list[str] = Field(default_factory=list)
+    # Diagnóstico: total_hits reportado por cada tribunal que respondeu.
+    # Útil para o usuário entender de onde vieram os processos.
+    hits_per_tribunal: dict[str, int] = Field(default_factory=dict)
+    # Escopo da consulta executada. "national" = todos os 57 tribunais
+    # mapeados. "state" = apenas TJ + TRTs da UF do imóvel.
+    searched_scope: SearchedScope = "national"
+    # ``True`` quando a consulta incluiu busca por nome (além do CPF/CNPJ).
+    searched_by_name: bool = False
     total_hits: int = 0
     critical_hits: int = 0
     critical_labels: list[str] = Field(default_factory=list)
     sample_processes: list[ProcessSummary] = Field(default_factory=list, max_length=20)
-    # Lista COMPLETA dos processos encontrados (até 100 por tribunal),
-    # ordenados por data desc. ``sample_processes`` permanece como
-    # compactação para retrocompat com o frontend antigo.
+    # Lista COMPLETA dos processos encontrados (dedup por tribunal +
+    # número), ordenados por critical-first + data desc.
     processes_full: list[ProcessSummary] = Field(default_factory=list)
 
 
