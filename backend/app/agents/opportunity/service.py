@@ -28,16 +28,21 @@ from app.agents.opportunity.montecarlo import (
     simulate as monte_carlo_simulate,
 )
 from app.agents.opportunity.pricing_math import (
+    FinancingTerms,
+    MaxBidNumericParams,
     MaxBidParams,
     compute_acquisition_costs,
+    compute_financing_terms,
     compute_income_tax,
     compute_profit_and_roi,
     solve_max_bid,
+    solve_max_bid_numeric,
 )
 from app.agents.opportunity.schemas import (
     AnalysisInput,
     AnalysisResult,
     AssumptionsSnapshot,
+    FinancingTerms as FinancingTermsSchema,
     Scenario,
 )
 from app.agents.opportunity.verdict import (
@@ -131,6 +136,7 @@ def _build_scenario(
     pj_regime: str = "presumido",
     pj_real_income_rate: float = 0.24,
     pj_real_revenue_rate: float = 0.0925,
+    financing: FinancingTerms | None = None,
 ) -> Scenario:
     costs = compute_acquisition_costs(
         bid=bid,
@@ -146,8 +152,21 @@ def _build_scenario(
         holding_months=holding_months,
     )
 
+    # Quando financiado, compute_profit_and_roi precisa receber apenas o
+    # AGREGADO DE CUSTOS ACESSÓRIOS (sem o bid integral), e ele soma
+    # entry + holding_payments + acessórios internamente.
+    is_financed = financing is not None and financing.mode != "cash"
+    accessory_total = costs.total - costs.bid if is_financed else costs.total
+
     realtor_fee = sale_price * realtor_fee_pct
-    gp_pre_tax = sale_price - costs.total - realtor_fee
+    if is_financed:
+        capital_alocado = (
+            financing.entry + financing.holding_payments + accessory_total  # type: ignore[union-attr]
+        )
+        gp_pre_tax = sale_price - realtor_fee - financing.balance_at_sale - capital_alocado  # type: ignore[union-attr]
+    else:
+        gp_pre_tax = sale_price - costs.total - realtor_fee
+
     income_tax = compute_income_tax(
         buyer_type=buyer_type,
         sale_price=sale_price,
@@ -160,11 +179,27 @@ def _build_scenario(
     )
     pb = compute_profit_and_roi(
         sale_price=sale_price,
-        acquisition_cost_total=costs.total,
+        acquisition_cost_total=accessory_total,
         realtor_fee_pct=realtor_fee_pct,
         income_tax=income_tax,
         holding_months=holding_months,
+        financing=financing,
     )
+
+    financing_schema: FinancingTermsSchema | None = None
+    if is_financed:
+        assert financing is not None  # mypy
+        financing_schema = FinancingTermsSchema(
+            mode=financing.mode,  # type: ignore[arg-type]
+            entry=round(financing.entry, 2),
+            financed_amount=round(financing.financed_amount, 2),
+            pmt=round(financing.pmt, 2),
+            rate_monthly_pct=round(financing.rate_monthly_pct, 8),
+            loan_months=financing.loan_months,
+            holding_payments=round(financing.holding_payments, 2),
+            balance_at_sale=round(financing.balance_at_sale, 2),
+            interest_paid_holding=round(financing.interest_paid_holding, 2),
+        )
 
     return Scenario(
         label=label,  # type: ignore[arg-type]
@@ -178,7 +213,7 @@ def _build_scenario(
         renovation_cost=round(costs.renovation_cost, 2),
         other_costs=round(costs.other_costs, 2),
         holding_costs=round(costs.holding_costs, 2),
-        total_acquisition_cost=round(costs.total, 2),
+        total_acquisition_cost=round(pb.acquisition_cost_total, 2),
         realtor_fee=round(pb.realtor_fee, 2),
         gross_profit=round(pb.gross_profit, 2),
         income_tax=round(pb.income_tax, 2),
@@ -186,6 +221,7 @@ def _build_scenario(
         gross_roi_pct=round(pb.gross_roi_pct, 6),
         net_roi_pct=round(pb.net_roi_pct, 6),
         annualized_net_roi_pct=round(pb.annualized_net_roi_pct, 6),
+        financing=financing_schema,
     )
 
 
@@ -313,6 +349,42 @@ def run_analysis(
             prices = (proxy * 0.9, proxy, proxy * 1.1)
         pess_p, real_p, oti_p = prices
 
+    # --- 4b. Resolve termos de pagamento (financiado/parcelado/cash) ------
+    # IPCA / SELIC / taxa de mercado consultados sob demanda para resolver
+    # defaults. Falha silenciosa: caímos no fallback default da função.
+    bacen = get_bacen_service()
+    ipca_annual: float | None = None
+    selic_annual: float | None = None
+    default_loan_rate: float = 0.115
+    if inp.payment_mode == "installments_judicial" and (
+        inp.installments_index or "ipca"
+    ) != "none":
+        try:
+            if (inp.installments_index or "ipca") == "ipca":
+                ipca_annual = bacen.get_ipca_12m()
+            else:
+                selic_annual = bacen.get_selic_annual()
+        except BacenServiceError as exc:
+            logger.warning("opportunity.bacen.index_failed", error=str(exc))
+    if inp.payment_mode == "financed_bank" and inp.loan_rate_annual_pct is None:
+        rate = bacen.get_avg_real_estate_loan_annual()
+        if rate is not None:
+            default_loan_rate = rate
+
+    financing = compute_financing_terms(
+        bid=inp.bid_amount,
+        holding_months=inp.holding_months,
+        payment_mode=inp.payment_mode,
+        down_payment_pct=inp.down_payment_pct,
+        loan_months=inp.loan_months,
+        loan_rate_annual_pct=inp.loan_rate_annual_pct,
+        installments_count=inp.installments_count,
+        installments_index=inp.installments_index,
+        ipca_annual=ipca_annual,
+        selic_annual=selic_annual,
+        default_loan_rate_annual=default_loan_rate,
+    )
+
     common_kwargs = dict(
         bid=inp.bid_amount,
         auctioneer_fee_pct=auctioneer_fee_pct,
@@ -332,6 +404,7 @@ def run_analysis(
         pj_regime=inp.pj_regime,
         pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
         pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
+        financing=financing,
     )
 
     pessimista = _build_scenario(label="pessimista", sale_price=pess_p, **common_kwargs)
@@ -342,27 +415,62 @@ def run_analysis(
     holding_costs = float(inp.holding_months) * (
         float(inp.monthly_iptu) + float(inp.monthly_condo)
     )
-    max_bid = solve_max_bid(
-        MaxBidParams(
-            sale_price=real_p,
-            iptu_arrears=iptu_arrears,
-            condo_arrears=condo_arrears,
-            renovation_cost=renovation_cost,
-            other_costs=other_costs,
-            auctioneer_fee_pct=auctioneer_fee_pct,
-            itbi_pct=itbi_pct,
-            registration_pct=registration_pct,
-            realtor_fee_pct=A.REALTOR_FEE_PCT,
-            buyer_type=inp.buyer_type,
-            pf_brackets=A.IR_PF_BRACKETS,
-            pj_rate=A.IR_PJ_PCT,
-            target_net_roi=inp.target_net_roi_pct,
-            holding_costs=holding_costs,
-            pj_regime=inp.pj_regime,
-            pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
-            pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
+    if inp.payment_mode == "cash":
+        max_bid = solve_max_bid(
+            MaxBidParams(
+                sale_price=real_p,
+                iptu_arrears=iptu_arrears,
+                condo_arrears=condo_arrears,
+                renovation_cost=renovation_cost,
+                other_costs=other_costs,
+                auctioneer_fee_pct=auctioneer_fee_pct,
+                itbi_pct=itbi_pct,
+                registration_pct=registration_pct,
+                realtor_fee_pct=A.REALTOR_FEE_PCT,
+                buyer_type=inp.buyer_type,
+                pf_brackets=A.IR_PF_BRACKETS,
+                pj_rate=A.IR_PJ_PCT,
+                target_net_roi=inp.target_net_roi_pct,
+                holding_costs=holding_costs,
+                pj_regime=inp.pj_regime,
+                pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
+                pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
+            )
         )
-    )
+    else:
+        # Modos parcelados / financiados — relação bid → ROI não-linear.
+        # Solver numérico (busca binária), monotonia decrescente garantida.
+        max_bid = solve_max_bid_numeric(
+            MaxBidNumericParams(
+                sale_price=real_p,
+                iptu_arrears=iptu_arrears,
+                condo_arrears=condo_arrears,
+                renovation_cost=renovation_cost,
+                other_costs=other_costs,
+                auctioneer_fee_pct=auctioneer_fee_pct,
+                itbi_pct=itbi_pct,
+                registration_pct=registration_pct,
+                realtor_fee_pct=A.REALTOR_FEE_PCT,
+                buyer_type=inp.buyer_type,
+                pf_brackets=A.IR_PF_BRACKETS,
+                pj_rate=A.IR_PJ_PCT,
+                target_net_roi=inp.target_net_roi_pct,
+                holding_costs=holding_costs,
+                holding_months=inp.holding_months,
+                pj_regime=inp.pj_regime,
+                pj_real_income_rate=A.IR_PJ_REAL_INCOME_RATE,
+                pj_real_revenue_rate=A.IR_PJ_REAL_REVENUE_RATE,
+                payment_mode=inp.payment_mode,
+                down_payment_pct=inp.down_payment_pct,
+                loan_months=inp.loan_months,
+                loan_rate_annual_pct=inp.loan_rate_annual_pct,
+                installments_count=inp.installments_count,
+                installments_index=inp.installments_index,
+                ipca_annual=ipca_annual,
+                selic_annual=selic_annual,
+                default_loan_rate_annual=default_loan_rate,
+            )
+        )
     if max_bid is not None:
         max_bid = round(max_bid, 2)
 
@@ -591,6 +699,21 @@ def analyse_and_save(
             "registration_pct_override": inp.registration_pct_override,
             "auctioneer_fee_pct_override": inp.auctioneer_fee_pct_override,
             "sale_price_override": inp.sale_price_override,
+        },
+        # Modalidade de pagamento (cash/financed/parcelado) — premissas +
+        # métricas calculadas do cenário realista para auditoria.
+        "payment_terms": {
+            "payment_mode": inp.payment_mode,
+            "down_payment_pct": inp.down_payment_pct,
+            "loan_months": inp.loan_months,
+            "loan_rate_annual_pct": inp.loan_rate_annual_pct,
+            "installments_count": inp.installments_count,
+            "installments_index": inp.installments_index,
+            "computed": (
+                result.realista.financing.model_dump()
+                if result.realista.financing is not None
+                else None
+            ),
         },
     }
 

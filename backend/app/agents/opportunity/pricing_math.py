@@ -31,6 +31,178 @@ PFBracket = tuple[float, float]
 
 
 # =============================================================================
+# 0. Financiamento / parcelamento — Price + judicial
+# =============================================================================
+@dataclass(frozen=True, slots=True)
+class FinancingTerms:
+    """Métricas calculadas do financiamento/parcelamento para um cenário.
+
+    ``mode = "cash"`` → entry = bid, pmt = 0, balance_at_sale = 0, sem juros.
+    """
+
+    mode: str
+    entry: float
+    financed_amount: float
+    pmt: float
+    rate_monthly_pct: float
+    loan_months: int
+    holding_payments: float
+    balance_at_sale: float
+    interest_paid_holding: float
+
+
+def _monthly_from_annual(annual_pct: float) -> float:
+    """Equivalente mensal de uma taxa anual nominal: (1 + i_a)^(1/12) − 1."""
+    if annual_pct <= 0:
+        return 0.0
+    return (1.0 + annual_pct) ** (1.0 / 12.0) - 1.0
+
+
+def _price_pmt(financed: float, rate_monthly: float, n: int) -> float:
+    """Parcela Price (PMT) — amortização constante de juros + principal."""
+    if financed <= 0 or n <= 0:
+        return 0.0
+    if rate_monthly <= 0:
+        return financed / n
+    return financed * rate_monthly / (1.0 - (1.0 + rate_monthly) ** (-n))
+
+
+def _price_balance(
+    financed: float, rate_monthly: float, pmt: float, periods_paid: int
+) -> float:
+    """Saldo devedor de um Price após ``periods_paid`` parcelas pagas."""
+    if periods_paid <= 0:
+        return financed
+    if rate_monthly <= 0:
+        return max(0.0, financed - pmt * periods_paid)
+    factor = (1.0 + rate_monthly) ** periods_paid
+    return max(
+        0.0,
+        financed * factor - pmt * (factor - 1.0) / rate_monthly,
+    )
+
+
+def compute_financing_terms(
+    *,
+    bid: float,
+    holding_months: int,
+    payment_mode: str = "cash",
+    down_payment_pct: float | None = None,
+    loan_months: int | None = None,
+    loan_rate_annual_pct: float | None = None,
+    installments_count: int | None = None,
+    installments_index: str | None = None,
+    ipca_annual: float | None = None,
+    selic_annual: float | None = None,
+    default_loan_rate_annual: float = 0.115,
+) -> FinancingTerms:
+    """Resolve as métricas de pagamento para um cenário.
+
+    - ``cash``: entrada = bid, parcela 0, sem saldo.
+    - ``financed_bank``: amortização Price; defaults: entrada 30%, prazo 240 m,
+      taxa fornecida pelo caller ou ``default_loan_rate_annual``.
+    - ``installments_judicial``: parcelas mensais; correção pelo índice
+      escolhido (IPCA/SELIC/nenhum). Default: entrada 25%, 30 parcelas, IPCA.
+
+    Em todos os modos parcelados, ``holding_payments`` cobre apenas as
+    parcelas pagas dentro do horizonte de revenda; o saldo remanescente
+    abate da receita líquida no momento da venda.
+    """
+    if bid <= 0:
+        return FinancingTerms(
+            mode="cash",
+            entry=0.0,
+            financed_amount=0.0,
+            pmt=0.0,
+            rate_monthly_pct=0.0,
+            loan_months=0,
+            holding_payments=0.0,
+            balance_at_sale=0.0,
+            interest_paid_holding=0.0,
+        )
+
+    if payment_mode == "cash":
+        return FinancingTerms(
+            mode="cash",
+            entry=bid,
+            financed_amount=0.0,
+            pmt=0.0,
+            rate_monthly_pct=0.0,
+            loan_months=0,
+            holding_payments=0.0,
+            balance_at_sale=0.0,
+            interest_paid_holding=0.0,
+        )
+
+    if payment_mode == "financed_bank":
+        dp = down_payment_pct if down_payment_pct is not None else 0.30
+        n = loan_months if loan_months is not None else 240
+        rate_annual = (
+            loan_rate_annual_pct
+            if loan_rate_annual_pct is not None
+            else default_loan_rate_annual
+        )
+        rate_monthly = _monthly_from_annual(rate_annual)
+        entry = bid * dp
+        financed = bid - entry
+        pmt = _price_pmt(financed, rate_monthly, n)
+        periods_paid = max(0, min(holding_months, n))
+        holding_payments = pmt * periods_paid
+        balance = _price_balance(financed, rate_monthly, pmt, periods_paid)
+        # Juros pagos = total pago − amortização do principal.
+        interest = max(0.0, holding_payments - (financed - balance))
+        return FinancingTerms(
+            mode="financed_bank",
+            entry=entry,
+            financed_amount=financed,
+            pmt=pmt,
+            rate_monthly_pct=rate_monthly,
+            loan_months=n,
+            holding_payments=holding_payments,
+            balance_at_sale=balance,
+            interest_paid_holding=interest,
+        )
+
+    if payment_mode == "installments_judicial":
+        dp = down_payment_pct if down_payment_pct is not None else 0.25
+        n = installments_count if installments_count is not None else 30
+        idx = installments_index or "ipca"
+        if idx == "selic":
+            annual = selic_annual if selic_annual is not None else 0.105
+        elif idx == "ipca":
+            annual = ipca_annual if ipca_annual is not None else 0.045
+        else:
+            annual = 0.0
+        rate_monthly = _monthly_from_annual(annual)
+        entry = bid * dp
+        financed = bid - entry
+        # No judicial a parcela base é nominal (sem juros); a correção atua
+        # como reajuste mensal aproximado. Usamos a fórmula Price para
+        # convergir comportamento: com rate=0 cai em parcela linear.
+        pmt = _price_pmt(financed, rate_monthly, n)
+        periods_paid = max(0, min(holding_months, n))
+        holding_payments = pmt * periods_paid
+        balance = _price_balance(financed, rate_monthly, pmt, periods_paid)
+        interest = max(0.0, holding_payments - (financed - balance))
+        return FinancingTerms(
+            mode="installments_judicial",
+            entry=entry,
+            financed_amount=financed,
+            pmt=pmt,
+            rate_monthly_pct=rate_monthly,
+            loan_months=n,
+            holding_payments=holding_payments,
+            balance_at_sale=balance,
+            interest_paid_holding=interest,
+        )
+
+    # Modo desconhecido → fallback à vista.
+    return compute_financing_terms(
+        bid=bid, holding_months=holding_months, payment_mode="cash",
+    )
+
+
+# =============================================================================
 # 1. Custos
 # =============================================================================
 @dataclass(frozen=True, slots=True)
@@ -208,30 +380,54 @@ def compute_profit_and_roi(
     realtor_fee_pct: float,
     income_tax: float,
     holding_months: int = 12,
+    financing: FinancingTerms | None = None,
 ) -> ProfitBreakdown:
     """Lucro bruto, líquido e ROIs (incluindo anualizado).
 
     ``holding_months`` controla a anualização do net_roi. Default 12 deixa
     o ``annualized_net_roi_pct`` idêntico ao ``net_roi_pct``.
+
+    Quando ``financing`` é fornecido e o modo NÃO é ``cash``:
+    - ``acquisition_cost_total`` é interpretado como o agregado dos custos
+      acessórios (auctioneer + ITBI + registration + dívidas + reforma +
+      outros + holding) — SEM o valor cheio do lance, que já é representado
+      por ``entry + holding_payments + balance_at_sale``.
+    - **Capital alocado** (denominador do ROI) = entrada + parcelas pagas
+      no holding + acquisition_cost_total.
+    - **Receita líquida** = sale_price − realtor_fee − balance_at_sale.
+    - **Lucro bruto** = receita_líquida − capital_alocado (juros e custos
+      acessórios já estão dentro).
     """
     realtor_fee = sale_price * realtor_fee_pct
-    gross_profit = sale_price - acquisition_cost_total - realtor_fee
+
+    if financing is None or financing.mode == "cash":
+        # Comportamento histórico — capital = custo total + bid integral
+        # (já somado em acquisition_cost_total).
+        capital_alocado = acquisition_cost_total
+        gross_profit = sale_price - acquisition_cost_total - realtor_fee
+        net_revenue = sale_price - realtor_fee
+    else:
+        capital_alocado = (
+            financing.entry + financing.holding_payments + acquisition_cost_total
+        )
+        net_revenue = sale_price - realtor_fee - financing.balance_at_sale
+        gross_profit = net_revenue - capital_alocado
+
     net_profit = gross_profit - income_tax
 
-    # ROIs sobre o capital realmente desembolsado.
-    if acquisition_cost_total <= 0:
+    if capital_alocado <= 0:
         gross_roi = 0.0
         net_roi = 0.0
     else:
-        gross_roi = gross_profit / acquisition_cost_total
-        net_roi = net_profit / acquisition_cost_total
+        gross_roi = gross_profit / capital_alocado
+        net_roi = net_profit / capital_alocado
 
     annualized = annualize_roi(net_roi, holding_months)
 
     return ProfitBreakdown(
         sale_price=sale_price,
         realtor_fee=realtor_fee,
-        acquisition_cost_total=acquisition_cost_total,
+        acquisition_cost_total=capital_alocado,
         gross_profit=gross_profit,
         income_tax=income_tax,
         net_profit=net_profit,
@@ -433,3 +629,154 @@ def solve_max_bid(p: MaxBidParams) -> float | None:
     # MAIOR lance válido — corresponde à menor alíquota efetiva possível
     # dado o cenário (ganho de capital cai na primeira faixa que comporta).
     return max(candidates)
+
+
+# =============================================================================
+# 5. Lance máximo NUMÉRICO — para modos com financiamento/parcelamento
+# =============================================================================
+@dataclass(frozen=True, slots=True)
+class MaxBidNumericParams:
+    """Parâmetros para a busca numérica do lance máximo quando o lance entra
+    de forma não-linear no cálculo (financiamento Price, parcelamento com
+    índice de correção).
+
+    Estende ``MaxBidParams`` com os campos de payment_mode + parâmetros do
+    financiamento. Quando ``payment_mode = "cash"`` o caller deve preferir
+    ``solve_max_bid`` (algébrico) por performance.
+    """
+
+    sale_price: float
+    iptu_arrears: float
+    condo_arrears: float
+    renovation_cost: float
+    other_costs: float
+    auctioneer_fee_pct: float
+    itbi_pct: float
+    registration_pct: float
+    realtor_fee_pct: float
+    buyer_type: str
+    pf_brackets: tuple[PFBracket, ...]
+    pj_rate: float
+    target_net_roi: float
+    holding_costs: float
+    holding_months: int
+    pj_regime: str = "presumido"
+    pj_real_income_rate: float = 0.24
+    pj_real_revenue_rate: float = 0.0925
+    payment_mode: str = "cash"
+    down_payment_pct: float | None = None
+    loan_months: int | None = None
+    loan_rate_annual_pct: float | None = None
+    installments_count: int | None = None
+    installments_index: str | None = None
+    ipca_annual: float | None = None
+    selic_annual: float | None = None
+    default_loan_rate_annual: float = 0.115
+
+
+def _net_roi_at_bid(p: MaxBidNumericParams, bid: float) -> float:
+    """Calcula o net_roi resultante de um lance específico — usado pelo
+    solver numérico. Reproduz a stack inteira de cálculo (custos → IR →
+    profit_and_roi com financing)."""
+    if bid <= 0:
+        return -1.0
+    fin = compute_financing_terms(
+        bid=bid,
+        holding_months=p.holding_months,
+        payment_mode=p.payment_mode,
+        down_payment_pct=p.down_payment_pct,
+        loan_months=p.loan_months,
+        loan_rate_annual_pct=p.loan_rate_annual_pct,
+        installments_count=p.installments_count,
+        installments_index=p.installments_index,
+        ipca_annual=p.ipca_annual,
+        selic_annual=p.selic_annual,
+        default_loan_rate_annual=p.default_loan_rate_annual,
+    )
+
+    accessory_costs = (
+        bid * p.auctioneer_fee_pct
+        + bid * p.itbi_pct
+        + bid * p.registration_pct
+        + p.iptu_arrears
+        + p.condo_arrears
+        + p.renovation_cost
+        + p.other_costs
+        + p.holding_costs
+    )
+    # No modo cash, o custo total inclui o bid integral. Nos modos parcelados,
+    # o "acquisition" recebido por compute_profit_and_roi é apenas o agregado
+    # acessório — o bid é representado por entry/holding_payments/balance.
+    acq_total = (
+        bid + accessory_costs
+        if fin.mode == "cash"
+        else accessory_costs
+    )
+
+    realtor_fee = p.sale_price * p.realtor_fee_pct
+    if fin.mode == "cash":
+        gross_profit = p.sale_price - acq_total - realtor_fee
+    else:
+        net_revenue = p.sale_price - realtor_fee - fin.balance_at_sale
+        capital = fin.entry + fin.holding_payments + acq_total
+        gross_profit = net_revenue - capital
+
+    tax = compute_income_tax(
+        buyer_type=p.buyer_type,
+        sale_price=p.sale_price,
+        gross_profit=gross_profit,
+        pf_brackets=p.pf_brackets,
+        pj_rate=p.pj_rate,
+        pj_regime=p.pj_regime,
+        pj_real_income_rate=p.pj_real_income_rate,
+        pj_real_revenue_rate=p.pj_real_revenue_rate,
+    )
+
+    breakdown = compute_profit_and_roi(
+        sale_price=p.sale_price,
+        acquisition_cost_total=acq_total,
+        realtor_fee_pct=p.realtor_fee_pct,
+        income_tax=tax,
+        holding_months=p.holding_months,
+        financing=fin,
+    )
+    return breakdown.net_roi_pct
+
+
+def solve_max_bid_numeric(
+    p: MaxBidNumericParams, *, max_iter: int = 80, tol_brl: float = 1.0
+) -> float | None:
+    """Busca binária pelo maior lance que atinge ``target_net_roi``.
+
+    A função ``bid → net_roi(bid)`` é monotonicamente decrescente em todos
+    os modos suportados (mais lance ⇒ mais capital ⇒ menos ROI). Procuramos
+    o ``bid*`` tal que ``net_roi(bid*) = target``.
+
+    Limites: lance mínimo R$ 1, lance máximo = sale_price (acima disso já é
+    prejuízo certo). Retorna ``None`` se nem com lance mínimo o target é
+    alcançado (mercado fora de ROI no preço de venda dado).
+    """
+    if p.sale_price <= 0:
+        return None
+    lo = 1.0
+    hi = p.sale_price * 1.5  # margem para casos onde o target é negativo
+
+    roi_lo = _net_roi_at_bid(p, lo)
+    if roi_lo < p.target_net_roi:
+        # Mesmo no lance mínimo o ROI já é menor que o target.
+        return None
+    roi_hi = _net_roi_at_bid(p, hi)
+    if roi_hi >= p.target_net_roi:
+        # Mesmo no teto alto o target é atendido — retorna o teto.
+        return hi
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        roi_mid = _net_roi_at_bid(p, mid)
+        if roi_mid >= p.target_net_roi:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < tol_brl:
+            break
+    return lo

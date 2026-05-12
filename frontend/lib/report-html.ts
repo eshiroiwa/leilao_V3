@@ -361,7 +361,43 @@ function renderScenario(s: OpportunityScenario, highlight = false): string {
     <div class="row"><span class="lbl">Lucro bruto</span><span class="val">${fmtBRL(s.gross_profit)}</span></div>
     <div class="row"><span class="lbl">ROI bruto</span><span class="val">${fmtPct(s.gross_roi_pct)}</span></div>
   </div>
+
+  ${renderFinancingInline(s)}
 </div>`;
+}
+
+const REPORT_FINANCING_LABEL: Record<string, string> = {
+  financed_bank: "Financiamento bancário",
+  installments_judicial: "Parcelamento judicial",
+};
+
+function renderFinancingInline(s: OpportunityScenario): string {
+  const f = s.financing;
+  if (!f || f.mode === "cash") return "";
+  const leverage = f.entry > 0 ? s.bid / f.entry : null;
+  const label = REPORT_FINANCING_LABEL[f.mode] ?? f.mode;
+  const leverageBadge =
+    leverage != null && leverage > 1
+      ? `<span class="ref-tag" style="margin-left:6px">Alavancado ${leverage.toFixed(1)}×</span>`
+      : "";
+  return `
+  <div class="block muted-block" style="border-style:dashed">
+    <div class="row" style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:11px">
+      <span>${esc(label)}${leverageBadge}</span>
+    </div>
+    <div class="row"><span class="lbl">Entrada</span><span class="val">${fmtBRL(f.entry)}</span></div>
+    <div class="row"><span class="lbl">Parcela mensal</span><span class="val">${fmtBRL(f.pmt)}</span></div>
+    <div class="row"><span class="lbl">Pagas no holding</span><span class="val">${fmtBRL(f.holding_payments)}</span></div>
+    <div class="row"><span class="lbl">Saldo devedor na venda</span><span class="val">${fmtBRL(f.balance_at_sale)}</span></div>
+    <div class="row"><span class="lbl">Juros pagos</span><span class="val">${fmtBRL(f.interest_paid_holding)}</span></div>
+  </div>`;
+}
+
+function paymentModeLabel(mode: string | null | undefined): string {
+  const m = mode ?? "cash";
+  if (m === "financed_bank") return "financiado";
+  if (m === "installments_judicial") return "parcelado (judicial)";
+  return "à vista";
 }
 
 function renderOpportunity(
@@ -424,9 +460,9 @@ function renderOpportunity(
   <div class="muted">
     Comprador ${esc(buyerLabel)} · ROI alvo
     ${fmtPct(result.input.target_net_roi_pct, 0)} · Reforma
-    ${esc(result.input.renovation_level)} · Imóvel em ${esc(
-      property.city ?? "",
-    )}/${esc(property.state ?? "")}
+    ${esc(result.input.renovation_level)} · Pagamento ${esc(
+      paymentModeLabel(result.input.payment_mode),
+    )} · Imóvel em ${esc(property.city ?? "")}/${esc(property.state ?? "")}
   </div>
 
   <div class="grid-3" style="margin-top:14px">

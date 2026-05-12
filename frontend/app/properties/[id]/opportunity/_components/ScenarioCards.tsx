@@ -160,8 +160,59 @@ function ScenarioCard({
           <Row label="Lucro bruto" value={formatBRL(s.gross_profit)} muted />
           <Row label="ROI bruto" value={formatPct(s.gross_roi_pct)} muted />
         </div>
+
+        {s.financing && s.financing.mode !== "cash" && (
+          <FinancingBlock financing={s.financing} bid={s.bid} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+const FINANCING_LABEL: Record<string, string> = {
+  financed_bank: "Financiamento bancário",
+  installments_judicial: "Parcelamento judicial",
+};
+
+function FinancingBlock({
+  financing,
+  bid,
+}: {
+  financing: NonNullable<OpportunityScenario["financing"]>;
+  bid: number;
+}) {
+  const leverage = financing.entry > 0 ? bid / financing.entry : null;
+  const label = FINANCING_LABEL[financing.mode] ?? financing.mode;
+  return (
+    <details className="rounded-md border border-dashed bg-card/40 p-2">
+      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+        {leverage != null && leverage > 1 && (
+          <span className="ml-2 inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-primary">
+            Alavancado {leverage.toFixed(1)}×
+          </span>
+        )}
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        <Row label="Entrada" value={formatBRL(financing.entry)} />
+        <Row label="Parcela mensal" value={formatBRL(financing.pmt)} />
+        <Row
+          label="Pagas no holding"
+          value={formatBRL(financing.holding_payments)}
+          muted
+        />
+        <Row
+          label="Saldo devedor na venda"
+          value={formatBRL(financing.balance_at_sale)}
+          muted
+        />
+        <Row
+          label="Juros pagos"
+          value={formatBRL(financing.interest_paid_holding)}
+          muted
+        />
+      </div>
+    </details>
   );
 }
 

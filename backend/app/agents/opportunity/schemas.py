@@ -19,6 +19,15 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+PaymentMode = Literal["cash", "financed_bank", "installments_judicial"]
+"""Modalidade de pagamento do lance:
+- ``cash``: à vista (default; comportamento histórico).
+- ``financed_bank``: financiamento imobiliário bancário (Price).
+- ``installments_judicial``: parcelamento via edital judicial (entrada + N parcelas)."""
+
+InstallmentsIndex = Literal["none", "ipca", "selic"]
+"""Índice de correção das parcelas do parcelamento judicial."""
+
 from app.agents.opportunity.assumptions import (
     BuyerType,
     PJRegime,
@@ -132,6 +141,95 @@ class AnalysisInput(BaseModel):
         ),
     )
 
+    # Modalidade de pagamento — defaults preservam comportamento à vista.
+    payment_mode: PaymentMode = Field(
+        default="cash",
+        description=(
+            "Como o lance será pago: 'cash' (à vista, default),"
+            " 'financed_bank' (financiamento bancário Price) ou"
+            " 'installments_judicial' (parcelamento via edital judicial)."
+        ),
+    )
+    down_payment_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Entrada (fração do lance). Defaults sugeridos: 0.30 para"
+            " financiamento bancário, 0.25 para parcelamento judicial."
+        ),
+    )
+    loan_months: int | None = Field(
+        default=None,
+        ge=12,
+        le=420,
+        description="Prazo total do financiamento bancário, em meses (default 240).",
+    )
+    loan_rate_annual_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Taxa nominal anual do financiamento bancário (fração)."
+            " Quando omitida, o serviço resolve a taxa média do mercado"
+            " via BACEN SGS 25497 (financiamento imobiliário PF SBPE)."
+        ),
+    )
+    installments_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=360,
+        description="Número de parcelas do parcelamento judicial (default 30).",
+    )
+    installments_index: InstallmentsIndex | None = Field(
+        default=None,
+        description=(
+            "Índice de correção das parcelas do parcelamento judicial:"
+            " 'none' (sem correção), 'ipca' ou 'selic'. Default: 'ipca'."
+        ),
+    )
+
+
+# =============================================================================
+# Estrutura de financiamento / parcelamento (presente quando payment_mode != cash)
+# =============================================================================
+class FinancingTerms(BaseModel):
+    """Métricas calculadas do financiamento/parcelamento para um cenário.
+
+    Quando ``payment_mode = cash`` este bloco fica ``None`` no Scenario.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: PaymentMode
+    entry: float = Field(description="Entrada (R$) paga no momento da arrematação.")
+    financed_amount: float = Field(
+        description="Valor financiado/parcelado = bid − entrada."
+    )
+    pmt: float = Field(description="Parcela mensal (R$).")
+    rate_monthly_pct: float = Field(
+        description="Taxa mensal efetiva aplicada (fração). 0 quando sem juros."
+    )
+    loan_months: int = Field(description="Prazo total (meses).")
+    holding_payments: float = Field(
+        description=(
+            "Soma das parcelas pagas durante o horizonte de holding"
+            " (min(holding_months, loan_months) parcelas)."
+        )
+    )
+    balance_at_sale: float = Field(
+        description=(
+            "Saldo devedor remanescente no momento da venda (R$). Quitado"
+            " com o produto da venda — abate da receita líquida."
+        )
+    )
+    interest_paid_holding: float = Field(
+        description=(
+            "Juros pagos até a venda (R$) = holding_payments − amortização"
+            " do principal. Custo dedutível na apuração de IR."
+        )
+    )
+
 
 # =============================================================================
 # Resultado por cenário
@@ -175,6 +273,12 @@ class Scenario(BaseModel):
     # (1 + net_roi)^(12/holding_months) − 1. Para holding_months = 12
     # coincide com net_roi_pct.
     annualized_net_roi_pct: float
+
+    # Financiamento / parcelamento (None quando à vista).
+    # Quando presente, ``total_acquisition_cost`` representa CAPITAL ALOCADO
+    # (entrada + parcelas pagas no holding + custos diretos), não o custo
+    # bruto da operação. ROI é alavancado.
+    financing: FinancingTerms | None = None
 
 
 # =============================================================================

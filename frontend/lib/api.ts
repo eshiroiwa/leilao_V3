@@ -170,6 +170,15 @@ export type Verdict =
 /** Regime tributário para PJ. Ignorado quando `buyer_type === "PF"`. */
 export type PJRegime = "presumido" | "real";
 
+/** Modalidade de pagamento do lance. */
+export type PaymentMode =
+  | "cash"
+  | "financed_bank"
+  | "installments_judicial";
+
+/** Índice de correção das parcelas no parcelamento judicial. */
+export type InstallmentsIndex = "none" | "ipca" | "selic";
+
 export type OpportunityInput = {
   buyer_type: BuyerType;
   /** "presumido" (default — 6,5% sobre venda) ou "real"
@@ -193,6 +202,31 @@ export type OpportunityInput = {
   registration_pct_override?: number | null;
   auctioneer_fee_pct_override?: number | null;
   sale_price_override?: number | null;
+  /** Modalidade de pagamento. Default "cash" (à vista). */
+  payment_mode?: PaymentMode;
+  /** Entrada como fração do lance. Default 0.30 (financiado) / 0.25 (judicial). */
+  down_payment_pct?: number | null;
+  /** Prazo total do financiamento bancário (meses). Default 240. */
+  loan_months?: number | null;
+  /** Taxa nominal anual (fração) do financiamento bancário. Default = BACEN. */
+  loan_rate_annual_pct?: number | null;
+  /** Número de parcelas do parcelamento judicial. Default 30. */
+  installments_count?: number | null;
+  /** Índice de correção do parcelamento judicial. Default "ipca". */
+  installments_index?: InstallmentsIndex | null;
+};
+
+/** Métricas calculadas do financiamento/parcelamento (snapshot por cenário). */
+export type FinancingTerms = {
+  mode: PaymentMode;
+  entry: number;
+  financed_amount: number;
+  pmt: number;
+  rate_monthly_pct: number;
+  loan_months: number;
+  holding_payments: number;
+  balance_at_sale: number;
+  interest_paid_holding: number;
 };
 
 export type OpportunityScenario = {
@@ -218,6 +252,8 @@ export type OpportunityScenario = {
   net_roi_pct: number;
   /** ROI líquido anualizado: (1+net_roi)^(12/holding_months) - 1. */
   annualized_net_roi_pct: number;
+  /** Financiamento/parcelamento aplicado (null quando à vista). */
+  financing?: FinancingTerms | null;
 };
 
 export type OpportunityAssumptions = {
@@ -495,7 +531,23 @@ export type OpportunityAnalysisRow = {
     auctioneer_fee_pct_override?: number | null;
     sale_price_override?: number | null;
   } | null;
+  /** Modalidade de pagamento persistida (cash/financed/judicial + métricas). */
+  payment_terms?: {
+    payment_mode?: PaymentMode | null;
+    down_payment_pct?: number | null;
+    loan_months?: number | null;
+    loan_rate_annual_pct?: number | null;
+    installments_count?: number | null;
+    installments_index?: InstallmentsIndex | null;
+    computed?: FinancingTerms | null;
+  } | null;
   created_at: string;
+};
+
+export type MarketLoanRate = {
+  rate_annual_pct: number;
+  source: "BACEN SGS 25497" | "fallback";
+  asof: string;
 };
 
 // =============================================================================
@@ -652,6 +704,11 @@ export const api = {
     request<OpportunityAnalysisRow>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/opportunity-analyses/${encodeURIComponent(analysisId)}`,
     ),
+
+  /** Taxa média de financiamento imobiliário PF (BACEN SGS 25497).
+   * Fallback ~11,5% a.a. quando o BACEN está fora do ar. */
+  getMarketLoanRate: () =>
+    request<MarketLoanRate>("/api/v1/market-rates/loan"),
 
   // ===== AGENTE 4 (Deep Analysis) =====
   startDeepAnalysis: (

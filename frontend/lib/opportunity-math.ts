@@ -291,6 +291,135 @@ export function annualizeRoi(netRoi: number, holdingMonths: number): number {
   return Math.pow(base, 12 / holdingMonths) - 1;
 }
 
+// =============================================================================
+// Financiamento / parcelamento — espelho de compute_financing_terms (Python).
+// =============================================================================
+function monthlyFromAnnual(annual: number): number {
+  if (annual <= 0) return 0;
+  return Math.pow(1 + annual, 1 / 12) - 1;
+}
+
+function pricePmt(financed: number, rateMonthly: number, n: number): number {
+  if (financed <= 0 || n <= 0) return 0;
+  if (rateMonthly <= 0) return financed / n;
+  return (financed * rateMonthly) / (1 - Math.pow(1 + rateMonthly, -n));
+}
+
+function priceBalance(
+  financed: number,
+  rateMonthly: number,
+  pmt: number,
+  periodsPaid: number,
+): number {
+  if (periodsPaid <= 0) return financed;
+  if (rateMonthly <= 0) return Math.max(0, financed - pmt * periodsPaid);
+  const factor = Math.pow(1 + rateMonthly, periodsPaid);
+  return Math.max(
+    0,
+    financed * factor - (pmt * (factor - 1)) / rateMonthly,
+  );
+}
+
+export type FinancingTermsClient = {
+  mode: "cash" | "financed_bank" | "installments_judicial";
+  entry: number;
+  financed_amount: number;
+  pmt: number;
+  rate_monthly_pct: number;
+  loan_months: number;
+  holding_payments: number;
+  balance_at_sale: number;
+  interest_paid_holding: number;
+};
+
+export function computeFinancingTerms(args: {
+  bid: number;
+  holdingMonths: number;
+  paymentMode?: "cash" | "financed_bank" | "installments_judicial";
+  downPaymentPct?: number | null;
+  loanMonths?: number | null;
+  loanRateAnnualPct?: number | null;
+  installmentsCount?: number | null;
+  installmentsIndex?: "none" | "ipca" | "selic" | null;
+  /** Defaults a aplicar quando não informados: IPCA/Selic anuais e
+   * taxa do financiamento (todos em fração). */
+  defaultLoanRateAnnual?: number;
+  ipcaAnnual?: number;
+  selicAnnual?: number;
+}): FinancingTermsClient {
+  const mode = args.paymentMode ?? "cash";
+  const bid = args.bid;
+  if (bid <= 0 || mode === "cash") {
+    return {
+      mode: "cash",
+      entry: bid <= 0 ? 0 : bid,
+      financed_amount: 0,
+      pmt: 0,
+      rate_monthly_pct: 0,
+      loan_months: 0,
+      holding_payments: 0,
+      balance_at_sale: 0,
+      interest_paid_holding: 0,
+    };
+  }
+
+  if (mode === "financed_bank") {
+    const dp = args.downPaymentPct ?? 0.3;
+    const n = args.loanMonths ?? 240;
+    const rateAnnual =
+      args.loanRateAnnualPct ?? args.defaultLoanRateAnnual ?? 0.115;
+    const rateMonthly = monthlyFromAnnual(rateAnnual);
+    const entry = bid * dp;
+    const financed = bid - entry;
+    const pmt = pricePmt(financed, rateMonthly, n);
+    const periodsPaid = Math.max(0, Math.min(args.holdingMonths, n));
+    const holdingPayments = pmt * periodsPaid;
+    const balance = priceBalance(financed, rateMonthly, pmt, periodsPaid);
+    const interest = Math.max(0, holdingPayments - (financed - balance));
+    return {
+      mode,
+      entry,
+      financed_amount: financed,
+      pmt,
+      rate_monthly_pct: rateMonthly,
+      loan_months: n,
+      holding_payments: holdingPayments,
+      balance_at_sale: balance,
+      interest_paid_holding: interest,
+    };
+  }
+
+  // installments_judicial
+  const dp = args.downPaymentPct ?? 0.25;
+  const n = args.installmentsCount ?? 30;
+  const idx = args.installmentsIndex ?? "ipca";
+  const annual =
+    idx === "selic"
+      ? args.selicAnnual ?? 0.105
+      : idx === "ipca"
+        ? args.ipcaAnnual ?? 0.045
+        : 0;
+  const rateMonthly = monthlyFromAnnual(annual);
+  const entry = bid * dp;
+  const financed = bid - entry;
+  const pmt = pricePmt(financed, rateMonthly, n);
+  const periodsPaid = Math.max(0, Math.min(args.holdingMonths, n));
+  const holdingPayments = pmt * periodsPaid;
+  const balance = priceBalance(financed, rateMonthly, pmt, periodsPaid);
+  const interest = Math.max(0, holdingPayments - (financed - balance));
+  return {
+    mode,
+    entry,
+    financed_amount: financed,
+    pmt,
+    rate_monthly_pct: rateMonthly,
+    loan_months: n,
+    holding_payments: holdingPayments,
+    balance_at_sale: balance,
+    interest_paid_holding: interest,
+  };
+}
+
 function buildScenario(
   label: OpportunityScenario["label"],
   salePrice: number,
@@ -308,19 +437,53 @@ function buildScenario(
     monthlyIptu: number;
     monthlyCondo: number;
     pjRegime: "presumido" | "real";
+    financing?: FinancingTermsClient | null;
   },
 ): OpportunityScenario {
   const c = computeAcquisitionCosts(args);
+  const isFinanced =
+    args.financing != null && args.financing.mode !== "cash";
+  // Custos acessórios (= custo total − bid) quando financiado.
+  const accessory = isFinanced ? c.total - c.bid : c.total;
+
   const realtorFee = salePrice * REALTOR_FEE_PCT;
-  const grossProfitPreTax = salePrice - c.total - realtorFee;
+  let capitalAlocado: number;
+  let grossProfitPreTax: number;
+  let netRevenue: number;
+  if (isFinanced && args.financing) {
+    capitalAlocado =
+      args.financing.entry + args.financing.holding_payments + accessory;
+    netRevenue = salePrice - realtorFee - args.financing.balance_at_sale;
+    grossProfitPreTax = netRevenue - capitalAlocado;
+  } else {
+    capitalAlocado = c.total;
+    netRevenue = salePrice - realtorFee;
+    grossProfitPreTax = salePrice - c.total - realtorFee;
+  }
+
   const incomeTax = computeIncomeTax(
     args.buyerType, salePrice, grossProfitPreTax, args.pjRegime,
   );
-  const grossProfit = salePrice - c.total - realtorFee;
+  const grossProfit = grossProfitPreTax;
   const netProfit = grossProfit - incomeTax;
-  const grossRoi = c.total > 0 ? grossProfit / c.total : 0;
-  const netRoi = c.total > 0 ? netProfit / c.total : 0;
+  const grossRoi = capitalAlocado > 0 ? grossProfit / capitalAlocado : 0;
+  const netRoi = capitalAlocado > 0 ? netProfit / capitalAlocado : 0;
   const annualizedNetRoi = annualizeRoi(netRoi, args.holdingMonths);
+
+  const financingOut = isFinanced && args.financing
+    ? {
+        mode: args.financing.mode,
+        entry: round2(args.financing.entry),
+        financed_amount: round2(args.financing.financed_amount),
+        pmt: round2(args.financing.pmt),
+        rate_monthly_pct:
+          Math.round(args.financing.rate_monthly_pct * 1e8) / 1e8,
+        loan_months: args.financing.loan_months,
+        holding_payments: round2(args.financing.holding_payments),
+        balance_at_sale: round2(args.financing.balance_at_sale),
+        interest_paid_holding: round2(args.financing.interest_paid_holding),
+      }
+    : null;
 
   return {
     label,
@@ -334,7 +497,7 @@ function buildScenario(
     renovation_cost: round2(c.renovationCost),
     other_costs: round2(c.otherCosts),
     holding_costs: round2(c.holdingCosts),
-    total_acquisition_cost: round2(c.total),
+    total_acquisition_cost: round2(capitalAlocado),
     realtor_fee: round2(realtorFee),
     gross_profit: round2(grossProfit),
     income_tax: round2(incomeTax),
@@ -342,6 +505,7 @@ function buildScenario(
     gross_roi_pct: round6(grossRoi),
     net_roi_pct: round6(netRoi),
     annualized_net_roi_pct: round6(annualizedNetRoi),
+    financing: financingOut,
   };
 }
 
@@ -754,6 +918,23 @@ export function runAnalysisLocal(args: {
   const monthlyIptu = input.monthly_iptu ?? 0;
   const monthlyCondo = input.monthly_condo ?? 0;
   const pjRegime = input.pj_regime ?? "presumido";
+
+  // Calcula termos de financiamento/parcelamento (cash: tudo zerado).
+  const financing = computeFinancingTerms({
+    bid: input.bid_amount,
+    holdingMonths,
+    paymentMode: input.payment_mode ?? "cash",
+    downPaymentPct: input.down_payment_pct ?? null,
+    loanMonths: input.loan_months ?? null,
+    loanRateAnnualPct: input.loan_rate_annual_pct ?? null,
+    installmentsCount: input.installments_count ?? null,
+    installmentsIndex: input.installments_index ?? null,
+    // Defaults sensatos para preview client-side (sem BACEN).
+    defaultLoanRateAnnual: 0.115,
+    ipcaAnnual: 0.045,
+    selicAnnual: 0.105,
+  });
+
   const common = {
     bid: input.bid_amount,
     auctioneerFeePct,
@@ -768,31 +949,76 @@ export function runAnalysisLocal(args: {
     monthlyIptu,
     monthlyCondo,
     pjRegime,
+    financing,
   };
 
   const pessimista = buildScenario("pessimista", pessP, common);
   const realista = buildScenario("realista", realP, common);
   const otimista = buildScenario("otimista", otiP, common);
 
-  // Lance máximo (sobre cenário REALISTA)
-  const maxBidRaw = solveMaxBid({
-    salePrice: realP,
-    iptuArrears,
-    condoArrears,
-    renovationCost,
-    otherCosts,
-    auctioneerFeePct,
-    itbiPct,
-    registrationPct,
-    realtorFeePct: REALTOR_FEE_PCT,
-    buyerType: input.buyer_type,
-    pfBrackets: IR_PF_BRACKETS,
-    pjRate: IR_PJ_PCT,
-    targetNetRoi: input.target_net_roi_pct,
-    holdingCosts: holdingMonths * (monthlyIptu + monthlyCondo),
-    pjRegime,
-  });
-  const maxBid = maxBidRaw != null ? round2(maxBidRaw) : null;
+  // Lance máximo (sobre cenário REALISTA).
+  // À vista: solver algébrico (rápido, fechado). Parcelado/financiado: busca
+  // binária numérica explorando a monotonia bid → roi (decrescente).
+  let maxBid: number | null = null;
+  if ((input.payment_mode ?? "cash") === "cash") {
+    const maxBidRaw = solveMaxBid({
+      salePrice: realP,
+      iptuArrears,
+      condoArrears,
+      renovationCost,
+      otherCosts,
+      auctioneerFeePct,
+      itbiPct,
+      registrationPct,
+      realtorFeePct: REALTOR_FEE_PCT,
+      buyerType: input.buyer_type,
+      pfBrackets: IR_PF_BRACKETS,
+      pjRate: IR_PJ_PCT,
+      targetNetRoi: input.target_net_roi_pct,
+      holdingCosts: holdingMonths * (monthlyIptu + monthlyCondo),
+      pjRegime,
+    });
+    maxBid = maxBidRaw != null ? round2(maxBidRaw) : null;
+  } else {
+    // Busca binária client-side. Reusa buildScenario para avaliar cada bid.
+    const evalRoi = (bid: number): number => {
+      const fin = computeFinancingTerms({
+        bid,
+        holdingMonths,
+        paymentMode: input.payment_mode ?? "cash",
+        downPaymentPct: input.down_payment_pct ?? null,
+        loanMonths: input.loan_months ?? null,
+        loanRateAnnualPct: input.loan_rate_annual_pct ?? null,
+        installmentsCount: input.installments_count ?? null,
+        installmentsIndex: input.installments_index ?? null,
+        defaultLoanRateAnnual: 0.115,
+        ipcaAnnual: 0.045,
+        selicAnnual: 0.105,
+      });
+      const sc = buildScenario("realista", realP, {
+        ...common,
+        bid,
+        financing: fin,
+      });
+      return sc.net_roi_pct;
+    };
+    let lo = 1;
+    let hi = realP * 1.5;
+    const target = input.target_net_roi_pct;
+    if (evalRoi(lo) < target) {
+      maxBid = null;
+    } else if (evalRoi(hi) >= target) {
+      maxBid = round2(hi);
+    } else {
+      for (let i = 0; i < 80; i++) {
+        const mid = 0.5 * (lo + hi);
+        if (evalRoi(mid) >= target) lo = mid;
+        else hi = mid;
+        if (hi - lo < 1) break;
+      }
+      maxBid = round2(lo);
+    }
+  }
 
   // Warnings + verdict
   const warnings = buildWarnings({

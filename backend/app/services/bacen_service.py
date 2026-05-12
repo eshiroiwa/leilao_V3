@@ -42,6 +42,9 @@ SGS_CDI_DAILY: Final[int] = 12
 SGS_IPCA_MONTHLY: Final[int] = 433
 SGS_INCC_M_MONTHLY: Final[int] = 192
 SGS_IGPM_MONTHLY: Final[int] = 188
+# 25497: Taxa média mensal de juros — operações de crédito - Aquisição de
+# imóveis - PF - SBPE - prefixado. Publicada mensalmente pelo BACEN.
+SGS_REAL_ESTATE_LOAN_PF_MONTHLY: Final[int] = 25497
 
 # 252 dias úteis num ano fiscal — convenção de mercado para anualizar
 # taxas overnight (Selic/CDI). NÃO use 365 — daria taxa errada para
@@ -125,6 +128,24 @@ class BacenService:
         daily_frac = daily_pct / 100.0
         return (1.0 + daily_frac) ** BUSINESS_DAYS_PER_YEAR - 1.0
 
+    def get_avg_real_estate_loan_annual(self) -> float | None:
+        """Taxa média anual de financiamento imobiliário PF (fração).
+
+        Consulta a série 25497 (taxa média mensal de juros, aquisição de
+        imóveis, PF, SBPE, prefixado) e anualiza via ``(1 + i_m)^12 − 1``.
+        Devolve ``None`` em qualquer falha (BACEN fora do ar, JSON inválido,
+        etc.) — o caller deve aplicar fallback (ex.: 11% a.a.).
+        """
+        try:
+            monthly_pct = self._fetch_last_value(SGS_REAL_ESTATE_LOAN_PF_MONTHLY)
+        except BacenServiceError as exc:
+            logger.warning("bacen.real_estate_loan.fetch_failed", error=str(exc))
+            return None
+        monthly_frac = monthly_pct / 100.0
+        if monthly_frac <= 0:
+            return None
+        return (1.0 + monthly_frac) ** 12 - 1.0
+
     def get_ipca_12m(self) -> float:
         """IPCA acumulado nos últimos 12 meses (fração).
 
@@ -177,5 +198,6 @@ __all__ = [
     "SGS_IPCA_MONTHLY",
     "SGS_INCC_M_MONTHLY",
     "SGS_IGPM_MONTHLY",
+    "SGS_REAL_ESTATE_LOAN_PF_MONTHLY",
     "BUSINESS_DAYS_PER_YEAR",
 ]

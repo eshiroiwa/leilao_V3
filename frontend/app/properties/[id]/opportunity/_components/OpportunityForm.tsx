@@ -1,14 +1,20 @@
 "use client";
 
+import { Loader2, RefreshCcw } from "lucide-react";
+import { useState } from "react";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type {
-  OpportunityAssumptions,
-  OpportunityInput,
-  PJRegime,
-  Property,
-  RenovationLevel,
+import {
+  api,
+  type InstallmentsIndex,
+  type OpportunityAssumptions,
+  type OpportunityInput,
+  type PaymentMode,
+  type PJRegime,
+  type Property,
+  type RenovationLevel,
 } from "@/lib/api";
 import {
   REGISTRATION_PCT_DEFAULT,
@@ -17,6 +23,18 @@ import {
   itbiPctFor,
 } from "@/lib/opportunity-math";
 import { formatBRL, formatPct } from "@/lib/utils";
+
+const PAYMENT_MODE_OPTIONS: { value: PaymentMode; label: string }[] = [
+  { value: "cash", label: "À vista" },
+  { value: "financed_bank", label: "Financiado" },
+  { value: "installments_judicial", label: "Parcelado (judicial)" },
+];
+
+const INSTALLMENTS_INDEX_OPTIONS: { value: InstallmentsIndex; label: string }[] = [
+  { value: "ipca", label: "IPCA" },
+  { value: "selic", label: "SELIC" },
+  { value: "none", label: "Sem correção" },
+];
 
 const RENOVATION_OPTIONS: { value: RenovationLevel; label: string }[] = [
   { value: "none", label: "Nenhuma" },
@@ -227,6 +245,9 @@ export function OpportunityForm({
             </div>
           )}
         </div>
+
+        {/* Modalidade de pagamento */}
+        <PaymentModeFields input={input} onChange={onChange} />
 
         {/* Valor de venda estimado (override do realista) */}
         <div className="space-y-1">
@@ -588,6 +609,253 @@ function PctOverrideField({
         Padrão: {formatPct(defaultValue)}
         {defaultSourceLabel && ` · ${defaultSourceLabel}`}
       </p>
+    </div>
+  );
+}
+
+// =============================================================================
+// Modalidade de pagamento: à vista / financiado bancário / parcelado judicial
+// =============================================================================
+function PaymentModeFields({
+  input,
+  onChange,
+}: {
+  input: OpportunityInput;
+  onChange: (next: OpportunityInput) => void;
+}) {
+  const mode: PaymentMode = input.payment_mode ?? "cash";
+  const [loadingRate, setLoadingRate] = useState(false);
+  const [rateSource, setRateSource] = useState<string | null>(null);
+
+  const setMode = (next: PaymentMode) => {
+    // Quando troca de modalidade, popula defaults se ainda não houver valor.
+    if (next === "cash") {
+      onChange({ ...input, payment_mode: next });
+      return;
+    }
+    if (next === "financed_bank") {
+      onChange({
+        ...input,
+        payment_mode: next,
+        down_payment_pct: input.down_payment_pct ?? 0.3,
+        loan_months: input.loan_months ?? 240,
+        loan_rate_annual_pct: input.loan_rate_annual_pct ?? 0.115,
+      });
+      return;
+    }
+    onChange({
+      ...input,
+      payment_mode: next,
+      down_payment_pct: input.down_payment_pct ?? 0.25,
+      installments_count: input.installments_count ?? 30,
+      installments_index: input.installments_index ?? "ipca",
+    });
+  };
+
+  const handleFetchMarketRate = async () => {
+    setLoadingRate(true);
+    try {
+      const res = await api.getMarketLoanRate();
+      onChange({ ...input, loan_rate_annual_pct: res.rate_annual_pct });
+      setRateSource(res.source);
+    } catch {
+      setRateSource("erro");
+    } finally {
+      setLoadingRate(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Label>Modalidade de pagamento</Label>
+      <div className="grid grid-cols-3 gap-1.5">
+        {PAYMENT_MODE_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setMode(opt.value)}
+            className={`rounded-md border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+              mode === opt.value
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border hover:bg-muted"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "financed_bank" && (
+        <div className="space-y-2 rounded-md border border-dashed p-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="down_payment_pct" className="text-[11px]">
+                Entrada (%)
+              </Label>
+              <Input
+                id="down_payment_pct"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={
+                  input.down_payment_pct != null
+                    ? Math.round(input.down_payment_pct * 100)
+                    : ""
+                }
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onChange({
+                    ...input,
+                    down_payment_pct: raw === "" ? null : Number(raw) / 100,
+                  });
+                }}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="loan_months" className="text-[11px]">
+                Prazo (meses)
+              </Label>
+              <Input
+                id="loan_months"
+                type="number"
+                min={12}
+                max={420}
+                step={12}
+                value={input.loan_months ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onChange({
+                    ...input,
+                    loan_months: raw === "" ? null : Number(raw),
+                  });
+                }}
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor="loan_rate" className="text-[11px]">
+                Taxa anual (%)
+              </Label>
+              <button
+                type="button"
+                onClick={handleFetchMarketRate}
+                disabled={loadingRate}
+                className="inline-flex items-center gap-1 text-[10px] text-primary underline hover:text-primary/80 disabled:opacity-60"
+              >
+                {loadingRate ? (
+                  <Loader2 className="size-2.5 animate-spin" />
+                ) : (
+                  <RefreshCcw className="size-2.5" />
+                )}
+                média mercado
+              </button>
+            </div>
+            <Input
+              id="loan_rate"
+              type="number"
+              min={0}
+              max={50}
+              step={0.1}
+              value={
+                input.loan_rate_annual_pct != null
+                  ? Math.round(input.loan_rate_annual_pct * 10000) / 100
+                  : ""
+              }
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                onChange({
+                  ...input,
+                  loan_rate_annual_pct: raw === "" ? null : Number(raw) / 100,
+                });
+              }}
+              placeholder="ex.: 11.5"
+            />
+            {rateSource && (
+              <p className="text-[10px] text-muted-foreground">
+                Fonte: {rateSource}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {mode === "installments_judicial" && (
+        <div className="space-y-2 rounded-md border border-dashed p-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="judicial_dp" className="text-[11px]">
+                Entrada (%)
+              </Label>
+              <Input
+                id="judicial_dp"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={
+                  input.down_payment_pct != null
+                    ? Math.round(input.down_payment_pct * 100)
+                    : ""
+                }
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onChange({
+                    ...input,
+                    down_payment_pct: raw === "" ? null : Number(raw) / 100,
+                  });
+                }}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="installments_count" className="text-[11px]">
+                Nº de parcelas
+              </Label>
+              <Input
+                id="installments_count"
+                type="number"
+                min={1}
+                max={360}
+                step={1}
+                value={input.installments_count ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onChange({
+                    ...input,
+                    installments_count: raw === "" ? null : Number(raw),
+                  });
+                }}
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[11px]">Índice de correção</Label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {INSTALLMENTS_INDEX_OPTIONS.map((opt) => {
+                const active =
+                  (input.installments_index ?? "ipca") === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() =>
+                      onChange({ ...input, installments_index: opt.value })
+                    }
+                    className={`rounded-md border px-2 py-1 text-[10px] transition-colors ${
+                      active
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border hover:bg-muted"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
