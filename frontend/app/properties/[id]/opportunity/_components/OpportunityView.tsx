@@ -26,11 +26,14 @@ import {
 } from "@/lib/opportunity-math";
 import { formatBRL } from "@/lib/utils";
 
+import { BidSimulationTab } from "./BidSimulationTab";
 import { LegalCheckCard } from "./LegalCheckCard";
 import { OpportunityForm } from "./OpportunityForm";
 import { ReportButton } from "./ReportButton";
 import { ScenarioCards } from "./ScenarioCards";
 import { VerdictCard } from "./VerdictCard";
+
+type AnalysisTab = "cenarios" | "simulacao";
 
 /**
  * Reconstrói o `OpportunityInput` a partir de uma análise salva no histórico.
@@ -79,6 +82,7 @@ export function OpportunityView({
   );
 
   const [input, setInput] = useState<OpportunityInput>(initialInput);
+  const [tab, setTab] = useState<AnalysisTab>("cenarios");
 
   // Quando o usuário clica num item do histórico, guardamos o id para
   // marcar visualmente qual análise está sendo "espelhada" no formulário.
@@ -240,7 +244,30 @@ export function OpportunityView({
       <section className="space-y-6">
         <VerdictCard result={result} property={property} />
 
-        <ScenarioCards result={result} />
+        <div className="flex gap-1 border-b">
+          <TabButton
+            active={tab === "cenarios"}
+            onClick={() => setTab("cenarios")}
+          >
+            Cenários
+          </TabButton>
+          <TabButton
+            active={tab === "simulacao"}
+            onClick={() => setTab("simulacao")}
+          >
+            Simulação de lances
+          </TabButton>
+        </div>
+
+        {tab === "cenarios" && <ScenarioCards result={result} />}
+        {tab === "simulacao" && (
+          <BidSimulationTab
+            input={input}
+            property={property}
+            valuation={valuation}
+            result={result}
+          />
+        )}
 
         <LegalCheckCard property={property} />
 
@@ -319,4 +346,29 @@ function verdictLabel(v: OpportunityResult["verdict"]): string {
     INVIAVEL: "Inviável",
     INDETERMINADO: "Indeterminado",
   }[v];
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+        active
+          ? "border-primary text-primary"
+          : "border-transparent text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
 }
