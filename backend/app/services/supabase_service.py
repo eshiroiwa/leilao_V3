@@ -38,6 +38,7 @@ class SupabaseService:
 
     def __init__(self, url: str, service_role_key: str) -> None:
         self._client: Client = create_client(url, service_role_key)
+        self._storage_base_url = url.rstrip("/")
 
     # ------------------------------------------------------------------ #
     # Auctioneers
@@ -742,6 +743,57 @@ class SupabaseService:
             ) from exc
         rows = res.data or []
         return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ #
+    # Storage — bucket "deep-images" (AGENTE 4)
+    # ------------------------------------------------------------------ #
+    DEEP_IMAGES_BUCKET = "deep-images"
+
+    def upload_deep_image(
+        self,
+        *,
+        property_id: str,
+        analysis_id: str,
+        slot: str,
+        content: bytes,
+        content_type: str = "image/jpeg",
+    ) -> str | None:
+        """Sobe um frame (Street View / aérea / foto edital) e devolve a
+        URL pública.
+
+        Path: ``{property_id}/{analysis_id}/{slot}.jpg``. ``upsert=true``
+        para que reanálises substituam imagens antigas sem erro. Falha
+        silenciosa: log + ``None`` (o nó segue sem URL daquele slot).
+        """
+        path = f"{property_id}/{analysis_id}/{slot}.jpg"
+        try:
+            self._client.storage.from_(self.DEEP_IMAGES_BUCKET).upload(
+                path,
+                content,
+                file_options={
+                    "content-type": content_type,
+                    "upsert": "true",
+                },
+            )
+            public_url = (
+                self._client.storage.from_(self.DEEP_IMAGES_BUCKET)
+                .get_public_url(path)
+            )
+        except Exception as exc:
+            logger.warning(
+                "supabase.storage.upload_failed",
+                bucket=self.DEEP_IMAGES_BUCKET,
+                path=path,
+                error=str(exc),
+            )
+            return None
+        logger.info(
+            "supabase.storage.upload_ok",
+            bucket=self.DEEP_IMAGES_BUCKET,
+            path=path,
+            bytes=len(content),
+        )
+        return public_url
 
     def get_latest_completed_deep_analysis(
         self, property_id: str

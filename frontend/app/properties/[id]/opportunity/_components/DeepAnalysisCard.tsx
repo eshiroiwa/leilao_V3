@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Building2,
   CameraOff,
   CheckCircle2,
   ExternalLink,
@@ -24,6 +25,7 @@ import type {
   ConditionAssessment,
   DeepAnalysisRow,
   DeepConfidence,
+  NeighborhoodClass,
   UrbanRiskItem,
 } from "@/lib/api";
 import { formatBRL, formatPct } from "@/lib/utils";
@@ -59,7 +61,15 @@ function fmtMeters(m: number | null | undefined): string {
   return `${(m / 1_000).toFixed(2)} km`;
 }
 
-export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
+export function DeepAnalysisCard({
+  row,
+  latitude,
+  longitude,
+}: {
+  row: DeepAnalysisRow;
+  latitude?: number | null;
+  longitude?: number | null;
+}) {
   return (
     <Card className="overflow-hidden">
       <CardHeader className="space-y-1 pb-2">
@@ -90,11 +100,7 @@ export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
             label="Liquidez"
             score={row.liquidity_score}
             confidence={row.liquidity_confidence}
-            sub={
-              row.city_population != null
-                ? `${row.city_population.toLocaleString("pt-BR")} hab.`
-                : undefined
-            }
+            sub={liquiditySub(row)}
           />
           <ScoreTile
             label="Flipping"
@@ -115,6 +121,11 @@ export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
             confidence={row.price_trend_confidence}
           />
         </div>
+
+        {/* Classe do bairro + concorrentes */}
+        {row.neighborhood_class && (
+          <NeighborhoodClassBlock cls={row.neighborhood_class} />
+        )}
 
         {/* Amenidades */}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -137,7 +148,11 @@ export function DeepAnalysisCard({ row }: { row: DeepAnalysisRow }) {
 
         {/* Avaliação visual (Vision LLM) — opcional, vira null sem foto */}
         {row.condition_assessment && (
-          <ConditionAssessmentBlock condition={row.condition_assessment} />
+          <ConditionAssessmentBlock
+            condition={row.condition_assessment}
+            latitude={latitude}
+            longitude={longitude}
+          />
         )}
 
         {/* Red / Green flags */}
@@ -407,17 +422,24 @@ function UrbanRiskRow({ risk }: { risk: UrbanRiskItem }) {
 }
 
 // =============================================================================
-// ConditionAssessmentBlock — Vision LLM sobre foto do edital
+// ConditionAssessmentBlock — Vision LLM sobre Street View + aérea + edital
 // =============================================================================
-const CONSERVATION_META: Record<
-  Exclude<ConditionAssessment["conservation_level"], null>,
+const NEIGHBORHOOD_PATTERN_META: Record<
+  Exclude<ConditionAssessment["neighborhood_pattern"], null>,
   { label: string; tone: "success" | "warning" | "danger" | "secondary" }
 > = {
-  novo: { label: "Novo", tone: "success" },
-  bom: { label: "Bom", tone: "success" },
-  regular: { label: "Regular", tone: "secondary" },
-  mau: { label: "Mau", tone: "warning" },
-  ruina: { label: "Ruína", tone: "danger" },
+  uniforme: { label: "Uniforme", tone: "success" },
+  misto: { label: "Misto", tone: "secondary" },
+  precario: { label: "Precário", tone: "warning" },
+};
+
+const PROPERTY_VS_NEIGHBORS_META: Record<
+  Exclude<ConditionAssessment["property_vs_neighbors"], null>,
+  { label: string; tone: "success" | "warning" | "danger" | "secondary" }
+> = {
+  acima: { label: "Acima dos vizinhos", tone: "success" },
+  igual: { label: "Compatível", tone: "secondary" },
+  abaixo: { label: "Abaixo dos vizinhos", tone: "warning" },
 };
 
 const RENO_SUGGESTION_LABEL: Record<
@@ -433,93 +455,223 @@ const RENO_SUGGESTION_LABEL: Record<
   premium: "Premium",
 };
 
+const SLOT_LABEL: Record<string, string> = {
+  aerial: "Vista aérea",
+  sv_front: "Frente do imóvel",
+  sv_left: "Vizinho à esquerda",
+  sv_right: "Vizinho à direita",
+  sv_back: "Outro lado da rua",
+  listing: "Foto do edital",
+};
+
+const SLOT_ORDER: string[] = [
+  "aerial",
+  "sv_front",
+  "sv_left",
+  "sv_right",
+  "sv_back",
+  "listing",
+];
+
+function slotFromUrl(url: string): string {
+  // Path: .../{property_id}/{analysis_id}/{slot}.jpg
+  const filename = url.split("/").pop() || "";
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+/** Heading do Street View para cada slot (graus, 0=N / 90=E / 180=S / 270=W). */
+const SV_HEADING_BY_SLOT: Record<string, number> = {
+  sv_front: 0,
+  sv_left: 90,
+  sv_back: 180,
+  sv_right: 270,
+};
+
+/** Constrói o link do Google Maps adequado ao slot, ou null se sem coords.
+ *
+ * - `aerial` → Maps com layer satellite no ponto exato (`t=k`).
+ * - `sv_*` → Street View interativo no ponto, com heading correspondente.
+ * - `listing` → link direto da imagem (sem geo associada). */
+function mapsLinkForSlot(
+  slot: string,
+  url: string,
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+): string {
+  if (slot === "listing") return url;
+  if (lat == null || lng == null) return url;
+  if (slot === "aerial") {
+    return `https://www.google.com/maps?q=${lat},${lng}&t=k&z=19`;
+  }
+  const heading = SV_HEADING_BY_SLOT[slot];
+  if (heading != null) {
+    return (
+      "https://www.google.com/maps/@?api=1&map_action=pano" +
+      `&viewpoint=${lat},${lng}&heading=${heading}&pitch=0&fov=80`
+    );
+  }
+  return url;
+}
+
 function ConditionAssessmentBlock({
   condition,
+  latitude,
+  longitude,
 }: {
   condition: ConditionAssessment;
+  latitude?: number | null;
+  longitude?: number | null;
 }) {
-  const hasData = condition.conservation_level != null;
-  const consMeta = condition.conservation_level
-    ? CONSERVATION_META[condition.conservation_level]
+  // Tolerância a análises antigas (pré-pivot): image_urls/risk_flags podem
+  // vir undefined no JSONB do banco.
+  const riskFlags = condition.risk_flags ?? [];
+  const imageUrls = condition.image_urls ?? [];
+  const hasInsights =
+    condition.neighborhood_pattern != null ||
+    condition.property_vs_neighbors != null ||
+    condition.pool_observed_nearby != null ||
+    condition.suggested_renovation_level != null ||
+    riskFlags.length > 0;
+  const hasImages = imageUrls.length > 0;
+  const patternMeta = condition.neighborhood_pattern
+    ? NEIGHBORHOOD_PATTERN_META[condition.neighborhood_pattern]
+    : null;
+  const vsMeta = condition.property_vs_neighbors
+    ? PROPERTY_VS_NEIGHBORS_META[condition.property_vs_neighbors]
     : null;
 
+  // Ordena URLs pela posição canônica do slot (aerial, sv_front, ..., listing).
+  const orderedImages = [...imageUrls].sort((a, b) => {
+    const ai = SLOT_ORDER.indexOf(slotFromUrl(a));
+    const bi = SLOT_ORDER.indexOf(slotFromUrl(b));
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+
   return (
-    <div className="space-y-2 rounded-md border border-dashed bg-card/40 p-3">
+    <div className="space-y-3 rounded-md border border-dashed bg-card/40 p-3">
       <div className="flex items-baseline justify-between gap-2">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Análise visual (Vision)
+          Análise visual do entorno
         </h4>
         <Badge variant={confidenceVariant(condition.confidence)} className="text-[10px]">
           confiança {confidenceLabel(condition.confidence)}
         </Badge>
       </div>
 
-      {!hasData ? (
+      {!hasInsights && !hasImages ? (
         <div className="flex items-start gap-2 text-xs text-muted-foreground">
           <CameraOff className="mt-0.5 size-3.5 shrink-0" />
           <span>{condition.notes || "Sem análise visual disponível."}</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_2fr]">
-          {condition.image_url ? (
-            // biome-ignore lint/performance/noImgElement: domínio variado, sem loader configurado
-            <img
-              src={condition.image_url}
-              alt="Foto do imóvel"
-              className="aspect-video w-full rounded-md border object-cover"
-            />
-          ) : (
-            <div className="flex aspect-video items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
-              sem foto
-            </div>
-          )}
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
-              {consMeta && (
+        <>
+          {/* Badges de entorno */}
+          {hasInsights && (
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5 text-xs">
+              {patternMeta && (
                 <span>
-                  <span className="text-muted-foreground">Conservação:</span>{" "}
-                  <Badge variant={consMeta.tone} className="text-[10px]">
-                    {consMeta.label}
+                  <span className="text-muted-foreground">Padrão do bairro:</span>{" "}
+                  <Badge variant={patternMeta.tone} className="text-[10px]">
+                    {patternMeta.label}
+                  </Badge>
+                </span>
+              )}
+              {vsMeta && (
+                <span>
+                  <span className="text-muted-foreground">Imóvel vs vizinhos:</span>{" "}
+                  <Badge variant={vsMeta.tone} className="text-[10px]">
+                    {vsMeta.label}
+                  </Badge>
+                </span>
+              )}
+              {condition.pool_observed_nearby != null && (
+                <span>
+                  <span className="text-muted-foreground">Piscina próxima:</span>{" "}
+                  <Badge
+                    variant={
+                      condition.pool_observed_nearby ? "success" : "secondary"
+                    }
+                    className="text-[10px]"
+                  >
+                    {condition.pool_observed_nearby ? "Sim" : "Não"}
                   </Badge>
                 </span>
               )}
               {condition.suggested_renovation_level && (
                 <span>
-                  <span className="text-muted-foreground">
-                    Reforma sugerida:
-                  </span>{" "}
+                  <span className="text-muted-foreground">Reforma sugerida:</span>{" "}
                   <strong>
                     {RENO_SUGGESTION_LABEL[condition.suggested_renovation_level]}
                   </strong>
                 </span>
               )}
             </div>
-            {condition.notes && (
-              <p className="text-[11px] text-muted-foreground">
-                {condition.notes}
-              </p>
-            )}
-            {condition.risk_flags.length > 0 && (
-              <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-danger-700">
-                  Itens observados na foto
-                </div>
-                <ul className="space-y-1 text-xs">
-                  {condition.risk_flags.map((flag, i) => (
-                    <li key={i} className="flex items-start gap-2">
-                      <AlertTriangle className="mt-0.5 size-3 shrink-0 text-danger-700" />
-                      <span>{flag}</span>
-                    </li>
-                  ))}
-                </ul>
+          )}
+
+          {/* Galeria de imagens capturadas */}
+          {hasImages && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {orderedImages.map((url) => {
+                const slot = slotFromUrl(url);
+                const label = SLOT_LABEL[slot] || slot;
+                const href = mapsLinkForSlot(slot, url, latitude, longitude);
+                const opensMaps = href !== url;
+                return (
+                  <a
+                    key={url}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={
+                      opensMaps
+                        ? `Abrir no Google Maps: ${label}`
+                        : label
+                    }
+                    className="block overflow-hidden rounded-md border bg-muted transition hover:border-primary"
+                  >
+                    {/* biome-ignore lint/performance/noImgElement: Supabase Storage, sem next/image loader configurado */}
+                    <img
+                      src={url}
+                      alt={label}
+                      className="aspect-video w-full object-cover"
+                    />
+                    <div className="flex items-center justify-between gap-1 px-2 py-1 text-[10px] text-muted-foreground">
+                      <span>{label}</span>
+                      {opensMaps && (
+                        <ExternalLink className="size-3 shrink-0 opacity-60" />
+                      )}
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Notes + risk flags */}
+          {condition.notes && (
+            <p className="text-[11px] text-muted-foreground">{condition.notes}</p>
+          )}
+          {riskFlags.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-danger-700">
+                Riscos do entorno observados
               </div>
-            )}
-            <p className="text-[10px] text-muted-foreground italic">
-              Sinal informativo — não substitui o nível de reforma que você
-              informou no Agente 3.
-            </p>
-          </div>
-        </div>
+              <ul className="space-y-1 text-xs">
+                {riskFlags.map((flag, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 size-3 shrink-0 text-danger-700" />
+                    <span>{flag}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="text-[10px] text-muted-foreground italic">
+            Sinal informativo — não substitui o nível de reforma que você
+            informou no Agente 3.
+          </p>
+        </>
       )}
     </div>
   );
@@ -531,6 +683,115 @@ function scoreColor(score: number | null | undefined): string {
   if (score === 3) return "";
   if (score === 2) return "text-warning-700";
   return "text-danger-700";
+}
+
+// =============================================================================
+// Liquidez: subtítulo agora combina densidade + população
+// =============================================================================
+function liquiditySub(row: DeepAnalysisRow): string | undefined {
+  const ev = row.liquidity_evidence as
+    | { listings_per_km2?: number | null }
+    | null
+    | undefined;
+  const density = ev?.listings_per_km2;
+  const parts: string[] = [];
+  if (typeof density === "number" && Number.isFinite(density)) {
+    parts.push(`${density.toFixed(1)} listings/km²`);
+  }
+  if (row.city_population != null) {
+    parts.push(`${row.city_population.toLocaleString("pt-BR")} hab.`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+// =============================================================================
+// NeighborhoodClassBlock — tier do bairro + 3 concorrentes
+// =============================================================================
+const TIER_META: Record<
+  NonNullable<NeighborhoodClass["tier"]>,
+  { tone: "success" | "secondary" | "warning"; label: string }
+> = {
+  A: { tone: "success", label: "A · premium" },
+  B: { tone: "secondary", label: "B · médio-alto" },
+  C: { tone: "secondary", label: "C · médio" },
+  D: { tone: "warning", label: "D · popular" },
+};
+
+function NeighborhoodClassBlock({ cls }: { cls: NeighborhoodClass }) {
+  const competitors = cls.competing_neighborhoods ?? [];
+  const tierMeta = cls.tier ? TIER_META[cls.tier] : null;
+  const ratioPct =
+    cls.ratio != null ? `${(cls.ratio * 100).toFixed(0)}% da cidade` : null;
+
+  return (
+    <div className="space-y-3 rounded-md border border-dashed bg-card/40 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <Building2 className="size-3.5" />
+          Classe do bairro
+        </h4>
+        <Badge
+          variant={confidenceVariant(cls.confidence)}
+          className="text-[10px]"
+        >
+          confiança {confidenceLabel(cls.confidence)}
+        </Badge>
+      </div>
+
+      {tierMeta ? (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5 text-xs">
+          <Badge variant={tierMeta.tone} className="text-[11px]">
+            {tierMeta.label}
+          </Badge>
+          {cls.target_ppm2_median != null && (
+            <span className="text-muted-foreground">
+              ppm² bairro:{" "}
+              <strong className="text-foreground">
+                {formatBRL(cls.target_ppm2_median)}
+              </strong>
+            </span>
+          )}
+          {cls.city_ppm2_brl != null && (
+            <span className="text-muted-foreground">
+              ppm² cidade:{" "}
+              <strong className="text-foreground">
+                {formatBRL(cls.city_ppm2_brl)}
+              </strong>
+            </span>
+          )}
+          {ratioPct && (
+            <span className="text-muted-foreground">{ratioPct}</span>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Amostra insuficiente no bairro para classificação.
+        </p>
+      )}
+
+      {competitors.length > 0 && (
+        <div>
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Bairros concorrentes (ppm² semelhante)
+          </div>
+          <ul className="space-y-1 text-xs">
+            {competitors.map((c) => (
+              <li
+                key={c.name}
+                className="flex items-center justify-between gap-2 rounded-md border bg-card px-2 py-1"
+              >
+                <span className="truncate font-medium">{c.name}</span>
+                <span className="shrink-0 text-[11px] text-muted-foreground">
+                  {c.distance_km.toFixed(1)} km · {formatBRL(c.ppm2_median)}/m²
+                  · {c.n_listings} anúncios
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Indicar uso para mantermos o lint feliz e suportar formatPct se necessário no futuro

@@ -7,6 +7,7 @@ listings já estão no DB.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from statistics import median
 from typing import Any
@@ -116,6 +117,7 @@ def compute_liquidity(
     *,
     neighbors: list[dict[str, Any]],
     city_population: int | None,
+    radius_m: int,
 ) -> LiquidityResult:
     """Score 1-5 de liquidez baseado em volume de oferta + recência + população.
 
@@ -131,6 +133,12 @@ def compute_liquidity(
     Confidence LOW quando a amostra é rasa.
     """
     n_listings = len(neighbors)
+
+    # Densidade no raio de busca — proxy de adensamento populacional.
+    # area_km2 = π · (raio_m/1000)². Para raio=2km → ~12.57 km².
+    radius_km = radius_m / 1000.0
+    area_km2 = math.pi * radius_km * radius_km
+    listings_per_km2 = round(n_listings / area_km2, 2) if area_km2 > 0 else None
 
     now = datetime.now(timezone.utc)
     ages_days: list[float] = []
@@ -150,8 +158,11 @@ def compute_liquidity(
         return LiquidityResult(
             score=score,
             confidence="LOW",
+            listings_per_km2=listings_per_km2,
             evidence={
                 "n_listings": n_listings,
+                "radius_m": radius_m,
+                "listings_per_km2": listings_per_km2,
                 "reason": "amostra_rasa",
                 "min_for_stats": MIN_LISTINGS_FOR_STATS,
             },
@@ -178,8 +189,11 @@ def compute_liquidity(
     return LiquidityResult(
         score=score,
         confidence=confidence,
+        listings_per_km2=listings_per_km2,
         evidence={
             "n_listings": n_listings,
+            "radius_m": radius_m,
+            "listings_per_km2": listings_per_km2,
             "city_population": city_population,
             "listing_age_median_days": (
                 round(age_median_days, 1) if age_median_days is not None else None

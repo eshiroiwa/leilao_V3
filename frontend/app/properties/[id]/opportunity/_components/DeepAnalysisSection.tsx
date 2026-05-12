@@ -31,11 +31,16 @@ export function DeepAnalysisSection({
   propertyId,
   opportunityAnalysisId,
   initialLatest,
+  latitude,
+  longitude,
 }: {
   propertyId: string;
   opportunityAnalysisId?: string | null;
   /** Última análise concluída do banco (cache). Pode ser null. */
   initialLatest: DeepAnalysisRow | null;
+  /** Coordenadas do imóvel — usadas para abrir Maps/Street View nos thumbs. */
+  latitude: number | null;
+  longitude: number | null;
 }) {
   const [history, setHistory] = useState<DeepAnalysisRow[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -199,7 +204,11 @@ export function DeepAnalysisSection({
 
         {/* Resultado */}
         {showCard && polling.row && polling.status === "completed" && (
-          <DeepAnalysisCard row={polling.row} />
+          <DeepAnalysisCard
+            row={polling.row}
+            latitude={latitude}
+            longitude={longitude}
+          />
         )}
 
         {/* Histórico (se houver mais de 1 análise) */}

@@ -84,6 +84,8 @@ export default async function PropertyOpportunityPage({
         propertyId={property.id}
         opportunityAnalysisId={history[0]?.id ?? null}
         initialLatest={latestDeep}
+        latitude={property.latitude}
+        longitude={property.longitude}
       />
     </div>
   );

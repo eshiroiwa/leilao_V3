@@ -24,6 +24,7 @@ from typing import Any
 from app.agents.deep.nodes.amenities import fetch_amenities
 from app.agents.deep.nodes.condition_assessment import assess_condition
 from app.agents.deep.nodes.demographics import fetch_demographics
+from app.agents.deep.nodes.neighborhood_class import classify_neighborhood
 from app.agents.deep.nodes.neighborhood_stats import (
     compute_flipping_potential,
     compute_liquidity,
@@ -39,6 +40,7 @@ from app.agents.deep.schemas import (
     DemographicsResult,
     FlippingResult,
     LiquidityResult,
+    NeighborhoodClassResult,
     OutlierResult,
     PriceTrendResult,
     PriorAuctionResult,
@@ -127,6 +129,7 @@ async def run_deep_analysis_inline(
     firecrawl: FirecrawlService,
     gmaps: GoogleMapsService,
     property_id: str,
+    analysis_id: str | None = None,
 ) -> dict[str, Any]:
     """Executa o pipeline ponta-a-ponta SEM persistir. Retorna um dict
     pronto para ser usado como ``UPDATE`` na row ``deep_analyses``.
@@ -206,10 +209,18 @@ async def run_deep_analysis_inline(
         matricula=prop.get("registry_number") or prop.get("matricula"),
     )
     # Vision é síncrono (LangChain) — joga numa thread pra não bloquear o loop.
+    # O nó captura aérea + 4 SVs + foto edital, salva em Storage e envia tudo
+    # ao GPT-4o multimodal para leitura do entorno.
     condition_task = asyncio.to_thread(
         assess_condition,
+        property_id=property_id,
+        analysis_id=analysis_id,
+        lat=lat,
+        lng=lng,
         image_url=prop.get("image_url"),
         vision=get_vision_service(),
+        gmaps=gmaps,
+        supabase=supabase,
     )
 
     # asyncio.gather + return_exceptions para que UM nó com falha NÃO
@@ -247,6 +258,21 @@ async def run_deep_analysis_inline(
     liquidity: LiquidityResult = compute_liquidity(
         neighbors=neighbors,
         city_population=demographics.city_population,
+        radius_m=NEIGHBORHOOD_RADIUS_M,
+    )
+
+    # ----- 4b. Classificação do bairro (FipeZAP + listings em 10 km) -------
+    city_ppm2_row = supabase.get_latest_city_ppm2(city=city, state=state)
+    city_ppm2_brl = (
+        float(city_ppm2_row["mean_ppm2_brl"]) if city_ppm2_row else None
+    )
+    neighborhood_class: NeighborhoodClassResult = classify_neighborhood(
+        neighborhood=neighborhood,
+        lat=lat,
+        lng=lng,
+        supabase=supabase,
+        city_ppm2_brl=city_ppm2_brl,
+        property_type=prop.get("property_type"),
     )
 
     # ----- 5. Síntese (LLM) ------------------------------------------------
@@ -285,9 +311,9 @@ async def run_deep_analysis_inline(
         llm_calls += 1
     if urban_risks.items:
         llm_calls += 1
-    # Vision conta como LLM call quando a foto foi processada com sucesso
-    # (conservation_level != None significa que o modelo respondeu).
-    if condition_assessment.conservation_level is not None:
+    # Vision conta como LLM call quando o pacote foi processado com sucesso
+    # (neighborhood_pattern != None significa que o modelo respondeu).
+    if condition_assessment.neighborhood_pattern is not None:
         llm_calls += 1
 
     return {
@@ -326,6 +352,8 @@ async def run_deep_analysis_inline(
         "prior_auction_evidence": prior_auction.evidence,
         # Condition assessment (Vision LLM — opcional/sinal)
         "condition_assessment": condition_assessment.model_dump(mode="json"),
+        # Classe do bairro + bairros concorrentes (puro, sem LLM)
+        "neighborhood_class": neighborhood_class.model_dump(mode="json"),
         # Synthesis
         "overall_score": synthesis.overall_score,
         "summary_text": synthesis.summary_text,
@@ -382,6 +410,7 @@ def enqueue_deep_analysis(analysis_id: str) -> None:
                 firecrawl=firecrawl,
                 gmaps=gmaps,
                 property_id=property_id,
+                analysis_id=analysis_id,
             )
         )
     except Exception as exc:

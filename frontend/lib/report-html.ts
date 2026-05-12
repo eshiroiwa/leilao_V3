@@ -592,7 +592,286 @@ function renderMap(
 </section>`;
 }
 
-function renderDeep(deep: DeepAnalysisRow): string {
+// -----------------------------------------------------------------------------
+// Vision LLM — galeria do ConditionAssessment (Street View + aérea + edital).
+// -----------------------------------------------------------------------------
+const COND_SLOT_LABEL: Record<string, string> = {
+  aerial: "Vista aérea",
+  sv_front: "Frente do imóvel",
+  sv_left: "Vizinho à esquerda",
+  sv_right: "Vizinho à direita",
+  sv_back: "Outro lado da rua",
+  listing: "Foto do edital",
+};
+const COND_SLOT_ORDER = [
+  "aerial",
+  "sv_front",
+  "sv_left",
+  "sv_right",
+  "sv_back",
+  "listing",
+];
+const COND_SV_HEADING_BY_SLOT: Record<string, number> = {
+  sv_front: 0,
+  sv_left: 90,
+  sv_back: 180,
+  sv_right: 270,
+};
+const COND_NEIGHBORHOOD_LABEL: Record<string, string> = {
+  uniforme: "Uniforme",
+  misto: "Misto",
+  precario: "Precário",
+};
+const COND_VS_LABEL: Record<string, string> = {
+  acima: "Acima dos vizinhos",
+  igual: "Compatível",
+  abaixo: "Abaixo dos vizinhos",
+};
+const COND_RENO_LABEL: Record<string, string> = {
+  none: "Nenhuma",
+  cosmetic: "Cosmética",
+  light: "Leve",
+  basic: "Básica",
+  moderate: "Moderada",
+  full: "Completa",
+  premium: "Premium",
+};
+
+function condSlotFromUrl(url: string): string {
+  const filename = url.split("/").pop() || "";
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function condMapsLinkForSlot(
+  slot: string,
+  url: string,
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+): string {
+  if (slot === "listing") return url;
+  if (lat == null || lng == null) return url;
+  if (slot === "aerial") {
+    return `https://www.google.com/maps?q=${lat},${lng}&t=k&z=19`;
+  }
+  const heading = COND_SV_HEADING_BY_SLOT[slot];
+  if (heading != null) {
+    return (
+      "https://www.google.com/maps/@?api=1&map_action=pano" +
+      `&viewpoint=${lat},${lng}&heading=${heading}&pitch=0&fov=80`
+    );
+  }
+  return url;
+}
+
+function renderConditionAssessment(
+  deep: DeepAnalysisRow,
+  property: Property,
+): string {
+  const cond = deep.condition_assessment;
+  if (!cond) return "";
+  const imageUrls = cond.image_urls ?? [];
+  const riskFlags = cond.risk_flags ?? [];
+  const hasInsights =
+    cond.neighborhood_pattern != null ||
+    cond.property_vs_neighbors != null ||
+    cond.pool_observed_nearby != null ||
+    cond.suggested_renovation_level != null ||
+    riskFlags.length > 0;
+  if (!hasInsights && imageUrls.length === 0) return "";
+
+  const badge = (label: string, value: string): string =>
+    `<span style="font-size:12px"><span class="muted">${esc(label)}:</span> <strong>${esc(value)}</strong></span>`;
+
+  const insights: string[] = [];
+  if (cond.neighborhood_pattern) {
+    insights.push(
+      badge(
+        "Padrão do bairro",
+        COND_NEIGHBORHOOD_LABEL[cond.neighborhood_pattern] ??
+          cond.neighborhood_pattern,
+      ),
+    );
+  }
+  if (cond.property_vs_neighbors) {
+    insights.push(
+      badge(
+        "Imóvel vs vizinhos",
+        COND_VS_LABEL[cond.property_vs_neighbors] ??
+          cond.property_vs_neighbors,
+      ),
+    );
+  }
+  if (cond.pool_observed_nearby != null) {
+    insights.push(
+      badge("Piscina próxima", cond.pool_observed_nearby ? "Sim" : "Não"),
+    );
+  }
+  if (cond.suggested_renovation_level) {
+    insights.push(
+      badge(
+        "Reforma sugerida",
+        COND_RENO_LABEL[cond.suggested_renovation_level] ??
+          cond.suggested_renovation_level,
+      ),
+    );
+  }
+
+  const ordered = [...imageUrls].sort((a, b) => {
+    const ai = COND_SLOT_ORDER.indexOf(condSlotFromUrl(a));
+    const bi = COND_SLOT_ORDER.indexOf(condSlotFromUrl(b));
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+
+  const gallery =
+    ordered.length === 0
+      ? ""
+      : `
+      <div style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        ${ordered
+          .map((url) => {
+            const slot = condSlotFromUrl(url);
+            const label = COND_SLOT_LABEL[slot] ?? slot;
+            const href = condMapsLinkForSlot(
+              slot,
+              url,
+              property.latitude,
+              property.longitude,
+            );
+            return `<a href="${esc(href)}" target="_blank" rel="noreferrer"
+              style="display:block;border:1px solid var(--border);border-radius:6px;overflow:hidden;text-decoration:none;color:inherit"
+              title="${esc(label)} — abrir no Google Maps">
+              <img src="${esc(url)}" alt="${esc(label)}"
+                style="display:block;width:100%;aspect-ratio:16/9;object-fit:cover"/>
+              <div style="padding:4px 8px;font-size:11px;color:var(--muted)">${esc(label)}</div>
+            </a>`;
+          })
+          .join("")}
+      </div>`;
+
+  const risks =
+    riskFlags.length === 0
+      ? ""
+      : `
+      <div style="margin-top:10px">
+        <h3 style="margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#991b1b">Riscos do entorno observados</h3>
+        <ul class="flag-list">
+          ${riskFlags.map((f) => `<li class="red">${esc(f)}</li>`).join("")}
+        </ul>
+      </div>`;
+
+  const notes = cond.notes
+    ? `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">${esc(cond.notes)}</p>`
+    : "";
+
+  return `
+    <div style="margin-top:14px;border:1px dashed var(--border);border-radius:8px;padding:12px;background:rgba(0,0,0,.02)">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+        <h3 style="margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">
+          Análise visual do entorno
+        </h3>
+        ${cond.confidence ? `<span class="tag muted" style="font-size:10px">confiança ${esc(cond.confidence)}</span>` : ""}
+      </div>
+      ${insights.length > 0 ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:12px">${insights.join("")}</div>` : ""}
+      ${gallery}
+      ${risks}
+      ${notes}
+      <p style="margin:8px 0 0;font-size:10px;color:var(--muted);font-style:italic">
+        Sinal informativo — não substitui o nível de reforma informado no Agente 3.
+      </p>
+    </div>`;
+}
+
+// -----------------------------------------------------------------------------
+// Liquidez: subtítulo combina densidade (listings/km²) + população
+// -----------------------------------------------------------------------------
+function condLiquiditySub(deep: DeepAnalysisRow): string | undefined {
+  const ev = deep.liquidity_evidence as
+    | { listings_per_km2?: number | null }
+    | null
+    | undefined;
+  const density = ev?.listings_per_km2;
+  const parts: string[] = [];
+  if (typeof density === "number" && Number.isFinite(density)) {
+    parts.push(`${density.toFixed(1)} listings/km²`);
+  }
+  if (deep.city_population != null) {
+    parts.push(`${deep.city_population.toLocaleString("pt-BR")} hab.`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+// -----------------------------------------------------------------------------
+// Classe do bairro + 3 bairros concorrentes
+// -----------------------------------------------------------------------------
+const COND_TIER_LABEL: Record<string, string> = {
+  A: "A · premium",
+  B: "B · médio-alto",
+  C: "C · médio",
+  D: "D · popular",
+};
+const COND_TIER_CLASS: Record<string, string> = {
+  A: "success",
+  B: "muted",
+  C: "muted",
+  D: "warning",
+};
+
+function renderNeighborhoodClass(deep: DeepAnalysisRow): string {
+  const cls = deep.neighborhood_class;
+  if (!cls) return "";
+  const competitors = cls.competing_neighborhoods ?? [];
+  const tierLabel = cls.tier ? COND_TIER_LABEL[cls.tier] : null;
+  const tierCls = cls.tier ? COND_TIER_CLASS[cls.tier] : "muted";
+  const ratioPct =
+    cls.ratio != null ? `${(cls.ratio * 100).toFixed(0)}% da cidade` : null;
+
+  const header = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+      <h3 style="margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">
+        Classe do bairro
+      </h3>
+      ${cls.confidence ? `<span class="tag muted" style="font-size:10px">confiança ${esc(cls.confidence)}</span>` : ""}
+    </div>`;
+
+  const body = tierLabel
+    ? `
+    <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin-top:6px">
+      <span class="tag ${tierCls}">${esc(tierLabel)}</span>
+      ${cls.target_ppm2_median != null ? `<span><span class="muted">ppm² bairro:</span> <strong>${esc(fmtBRL(cls.target_ppm2_median))}</strong></span>` : ""}
+      ${cls.city_ppm2_brl != null ? `<span><span class="muted">ppm² cidade:</span> <strong>${esc(fmtBRL(cls.city_ppm2_brl))}</strong></span>` : ""}
+      ${ratioPct ? `<span class="muted">${esc(ratioPct)}</span>` : ""}
+    </div>`
+    : `<p class="muted" style="margin:6px 0 0;font-size:12px">Amostra insuficiente no bairro para classificação.</p>`;
+
+  const compList =
+    competitors.length === 0
+      ? ""
+      : `
+    <div style="margin-top:10px">
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px">
+        Bairros concorrentes (ppm² semelhante)
+      </div>
+      <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px;font-size:12px">
+        ${competitors
+          .map(
+            (c) => `<li style="display:flex;justify-content:space-between;gap:8px;border:1px solid var(--border);border-radius:6px;padding:4px 8px">
+            <strong>${esc(c.name)}</strong>
+            <span class="muted" style="font-size:11px">${c.distance_km.toFixed(1)} km · ${esc(fmtBRL(c.ppm2_median))}/m² · ${c.n_listings} anúncios</span>
+          </li>`,
+          )
+          .join("")}
+      </ul>
+    </div>`;
+
+  return `
+    <div style="margin-top:14px;border:1px dashed var(--border);border-radius:8px;padding:12px;background:rgba(0,0,0,.02)">
+      ${header}
+      ${body}
+      ${compList}
+    </div>`;
+}
+
+function renderDeep(deep: DeepAnalysisRow, property: Property): string {
   const score = deep.overall_score;
   const scoreCls =
     score == null
@@ -698,9 +977,7 @@ function renderDeep(deep: DeepAnalysisRow): string {
     ${tile(
       "Liquidez",
       deep.liquidity_score != null ? `${deep.liquidity_score}/5` : "—",
-      deep.city_population != null
-        ? `${deep.city_population.toLocaleString("pt-BR")} hab.`
-        : undefined,
+      condLiquiditySub(deep),
     )}
     ${tile(
       "Flipping",
@@ -741,8 +1018,11 @@ function renderDeep(deep: DeepAnalysisRow): string {
     )}</div>
   </div>
 
+  ${renderNeighborhoodClass(deep)}
+
   ${flagsBlock("Pontos a favor", deep.green_flags, "green")}
   ${flagsBlock("Pontos de atenção", deep.red_flags, "red")}
+  ${renderConditionAssessment(deep, property)}
   ${risksBlock}
   ${recsBlock}
 
@@ -1025,7 +1305,7 @@ export function generateReportHtml(args: {
   ${renderProperty(property)}
   ${renderOpportunity(opportunity, property)}
   ${renderMap(property, comparables, apiKey)}
-  ${deepAnalysis && deepAnalysis.status === "completed" ? renderDeep(deepAnalysis) : ""}
+  ${deepAnalysis && deepAnalysis.status === "completed" ? renderDeep(deepAnalysis, property) : ""}
   <p class="muted" style="text-align:center;margin-top:18px">
     Relatório gerado automaticamente · ${esc(new Date().toLocaleString("pt-BR"))}
   </p>

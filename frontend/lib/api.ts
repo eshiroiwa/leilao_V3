@@ -278,12 +278,45 @@ export type DeepAnalysisStatus = "pending" | "running" | "completed" | "failed";
 /** Confidence específica do AGENTE 4 — só 3 níveis (sem INSUFFICIENT). */
 export type DeepConfidence = "HIGH" | "MEDIUM" | "LOW";
 
-/** Saída do nó CONDITION ASSESSMENT (Vision LLM sobre foto do edital). */
+/** Tier do bairro-alvo: razão entre ppm²_bairro e ppm²_cidade (FipeZAP). */
+export type NeighborhoodTier = "A" | "B" | "C" | "D";
+export type NeighborhoodTierLabel =
+  | "premium"
+  | "médio-alto"
+  | "médio"
+  | "popular";
+
+/** Um bairro concorrente — geograficamente próximo e com ppm² semelhante. */
+export type NeighborhoodCompetitor = {
+  name: string;
+  distance_km: number;
+  ppm2_median: number;
+  n_listings: number;
+};
+
+/** Saída do nó NEIGHBORHOOD CLASS (tier + concorrentes). */
+export type NeighborhoodClass = {
+  tier: NeighborhoodTier | null;
+  tier_label: NeighborhoodTierLabel | null;
+  target_ppm2_median: number | null;
+  city_ppm2_brl: number | null;
+  ratio: number | null;
+  competing_neighborhoods: NeighborhoodCompetitor[];
+  confidence: DeepConfidence;
+  evidence?: Record<string, unknown> | null;
+};
+
+/** Saída do nó CONDITION ASSESSMENT (Vision LLM sobre Street View + aérea). */
 export type ConditionAssessment = {
-  conservation_level: "novo" | "bom" | "regular" | "mau" | "ruina" | null;
+  neighborhood_pattern: "uniforme" | "misto" | "precario" | null;
+  property_vs_neighbors: "acima" | "igual" | "abaixo" | null;
+  pool_observed_nearby: boolean | null;
   suggested_renovation_level: RenovationLevel | null;
   risk_flags: string[];
-  image_url: string | null;
+  /** URLs públicas das imagens persistidas em Supabase Storage.
+   * Cada URL termina em `{slot}.jpg` (aerial/sv_front/sv_left/sv_right/
+   * sv_back/listing) — o frontend infere a legenda a partir do path. */
+  image_urls: string[];
   notes: string | null;
   confidence: DeepConfidence;
   cost_estimate_usd: number | null;
@@ -356,6 +389,9 @@ export type DeepAnalysisRow = {
 
   // Vision (foto do edital) — opcional, vira null quando property sem image_url
   condition_assessment?: ConditionAssessment | null;
+
+  // Classe do bairro + bairros concorrentes — opcional (análises antigas têm null)
+  neighborhood_class?: NeighborhoodClass | null;
 
   // síntese
   overall_score?: number | null;

@@ -55,6 +55,14 @@ class LiquidityResult(BaseModel):
     score: int | None = Field(default=None, ge=1, le=5)
     confidence: Confidence = "LOW"
     evidence: dict[str, Any] = Field(default_factory=dict)
+    listings_per_km2: float | None = Field(
+        default=None,
+        description=(
+            "Densidade de anúncios no raio de busca de vizinhos — proxy de"
+            " adensamento populacional e dinamismo do entorno. Calculado"
+            " como n_listings / (π · raio_km²)."
+        ),
+    )
 
 
 class OutlierResult(BaseModel):
@@ -116,10 +124,52 @@ class PriorAuctionResult(BaseModel):
 
 
 # =============================================================================
+# Classe do bairro + bairros concorrentes
+# =============================================================================
+NeighborhoodTier = Literal["A", "B", "C", "D"]
+NeighborhoodTierLabel = Literal["premium", "médio-alto", "médio", "popular"]
+
+
+class NeighborhoodCompetitor(BaseModel):
+    """Bairro vizinho com ppm² semelhante ao bairro-alvo.
+
+    ``distance_km`` é a distância entre o centróide dos listings deste bairro
+    e o centróide do bairro-alvo, em km."""
+
+    name: str
+    distance_km: float
+    ppm2_median: float
+    n_listings: int
+
+
+class NeighborhoodClassResult(BaseModel):
+    """Classifica o bairro-alvo em uma classe A/B/C/D pela razão entre o
+    ppm² mediano dos listings do bairro e o ppm² da cidade (preferencialmente
+    FipeZAP; cai para mediana global dos vizinhos quando ausente). Inclui
+    até 3 bairros concorrentes geograficamente próximos com ppm² semelhante,
+    para que o usuário tenha sugestões diretas de onde buscar imóveis equivalentes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tier: NeighborhoodTier | None = None
+    tier_label: NeighborhoodTierLabel | None = None
+    target_ppm2_median: float | None = None
+    city_ppm2_brl: float | None = None
+    ratio: float | None = None
+    competing_neighborhoods: list[NeighborhoodCompetitor] = Field(default_factory=list)
+    confidence: Confidence = "LOW"
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+# =============================================================================
 # Input / Output do pipeline
 # =============================================================================
-ConservationLevel = Literal["novo", "bom", "regular", "mau", "ruina"]
-"""Estado físico do imóvel inferido pelo Vision LLM sobre a foto do edital."""
+NeighborhoodPattern = Literal["uniforme", "misto", "precario"]
+"""Padrão construtivo predominante da quadra (inferido por Street View + aérea)."""
+
+PropertyVsNeighbors = Literal["acima", "igual", "abaixo"]
+"""O imóvel-alvo comparado aos vizinhos imediatos."""
 
 SuggestedRenovationLevel = Literal[
     "none", "cosmetic", "light", "basic", "moderate", "full", "premium"
@@ -128,21 +178,27 @@ SuggestedRenovationLevel = Literal[
 
 
 class ConditionAssessmentResult(BaseModel):
-    """Avaliação do estado de conservação por análise visual da foto do edital.
+    """Avaliação visual do ENTORNO via Vision LLM sobre Street View + aérea.
 
-    Estritamente um SINAL para o usuário — NÃO sobrescreve o
-    ``renovation_level`` informado no Agente 3. Quando Vision detecta
-    risco estrutural (hidráulica/elétrica/fachada/umidade), o item entra
-    em ``risk_flags`` e o frontend pode realçar como warning.
+    Substitui o antigo modelo de "fotos do edital" — agora o Vision olha
+    um pacote geocodificado (4 Street Views + 1 vista aérea + opcionalmente
+    a foto do edital) e devolve sinais sobre o entorno: padrão do bairro,
+    comparação com vizinhos, presença de piscinas, sugestão de reforma e
+    risk flags ambientais. NÃO sobrescreve o ``renovation_level`` do
+    Agente 3 — só informa.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    conservation_level: ConservationLevel | None = None
+    neighborhood_pattern: NeighborhoodPattern | None = None
+    property_vs_neighbors: PropertyVsNeighbors | None = None
+    pool_observed_nearby: bool | None = None
     suggested_renovation_level: SuggestedRenovationLevel | None = None
-    # Itens problemáticos detectados. Cada string é frase curta acionável.
     risk_flags: list[str] = Field(default_factory=list, max_length=10)
-    image_url: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
+    """URLs públicas (Supabase Storage) das imagens capturadas, em ordem.
+    Cada URL termina em ``{slot}.jpg`` (aerial/sv_front/sv_left/sv_right/
+    sv_back/listing) — frontend infere a legenda a partir do path."""
     notes: str | None = Field(default=None, max_length=600)
     confidence: Confidence = "LOW"
     cost_estimate_usd: float | None = None
@@ -179,6 +235,7 @@ class DeepAnalysisResult(BaseModel):
     urban_risks: UrbanRisksResult | None = None
     prior_auction: PriorAuctionResult | None = None
     condition_assessment: ConditionAssessmentResult | None = None
+    neighborhood_class: NeighborhoodClassResult | None = None
 
     # Síntese
     overall_score: int | None = Field(default=None, ge=1, le=5)
