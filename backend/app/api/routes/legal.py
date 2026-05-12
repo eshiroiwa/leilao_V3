@@ -15,13 +15,18 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.agents.legal.service import run_legal_check
 from app.core.logging import get_logger
+from app.services.matricula_ocr_service import (
+    MatriculaOcrError,
+    extract_matricula,
+)
 from app.services.supabase_service import SupabaseError, get_supabase_service
+from app.services.vision_service import get_vision_service
 
 logger = get_logger(__name__)
 
@@ -59,7 +64,21 @@ def _legal_result_to_payload(
         "matricula_check": result.matricula_check.model_dump(mode="json"),
         "has_critical_findings": result.has_critical_findings,
         "critical_findings": result.critical_findings,
+        "web_findings": [f.model_dump(mode="json") for f in result.web_findings],
+        "matricula_ocr": (
+            result.matricula_ocr.model_dump(mode="json")
+            if result.matricula_ocr is not None
+            else None
+        ),
+        "processes_full": [
+            p.model_dump(mode="json") for p in result.owner_processes.processes_full
+        ],
     }
+
+
+# Limite de tamanho do PDF de matrícula (10 MB). Matrículas digitalizadas
+# costumam ter 1-5 MB; acima disso é provavelmente PDF não otimizado.
+_MATRICULA_MAX_BYTES = 10 * 1024 * 1024
 
 
 @router.post(
@@ -115,4 +134,115 @@ async def get_latest_legal_check(property_id: UUID) -> dict[str, Any] | None:
         )
     except Exception as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    if row and row.get("matricula_ocr"):
+        # Anexa signed URL temporária do PDF para o frontend renderizar
+        # o link "baixar PDF original".
+        pdf_path = (row["matricula_ocr"] or {}).get("pdf_path")
+        if pdf_path:
+            signed = await run_in_threadpool(
+                sb.get_legal_pdf_signed_url, path=pdf_path
+            )
+            row["matricula_pdf_signed_url"] = signed
     return row
+
+
+@router.post(
+    "/{property_id}/legal/matricula",
+    summary=(
+        "Sobe um PDF de matrícula, faz OCR estruturado via Vision e persiste"
+        " no último legal_check (ou cria um novo)."
+    ),
+)
+async def upload_matricula(
+    property_id: UUID,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Esperado PDF, recebido content-type='{file.content_type}'.",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PDF vazio.")
+    if len(content) > _MATRICULA_MAX_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"PDF acima do limite ({_MATRICULA_MAX_BYTES // (1024 * 1024)} MB).",
+        )
+
+    sb = get_supabase_service()
+    try:
+        prop = await run_in_threadpool(sb.get_property_by_id, str(property_id))
+    except SupabaseError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    if not prop:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Property {property_id} não encontrado"
+        )
+
+    # 1. Upload do PDF no bucket privado (path, não URL pública).
+    pdf_path = await run_in_threadpool(
+        sb.upload_legal_pdf,
+        property_id=str(property_id),
+        content=content,
+    )
+
+    # 2. OCR via Vision (síncrono, joga em threadpool).
+    vision = get_vision_service()
+    try:
+        ocr_result = await run_in_threadpool(
+            extract_matricula,
+            content,
+            vision=vision,
+            pdf_path=pdf_path,
+        )
+    except MatriculaOcrError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    # 3. Persiste no último legal_check (UPDATE) ou cria placeholder mínimo.
+    latest = await run_in_threadpool(
+        sb.get_latest_legal_check, str(property_id)
+    )
+    matricula_ocr_json = ocr_result.model_dump(mode="json")
+    if latest and latest.get("id"):
+        try:
+            await run_in_threadpool(
+                sb.update_legal_check,
+                latest["id"],
+                {"matricula_ocr": matricula_ocr_json},
+            )
+        except SupabaseError as exc:
+            logger.warning("legal.matricula.persist_failed", error=str(exc))
+    else:
+        # Não há legal_check ainda — cria um placeholder só com a matrícula.
+        placeholder = {
+            "property_id": str(property_id),
+            "started_at": ocr_result.extracted_at.isoformat()
+            if ocr_result.extracted_at
+            else None,
+            "completed_at": ocr_result.extracted_at.isoformat()
+            if ocr_result.extracted_at
+            else None,
+            "duration_ms": 0,
+            "owner_processes": None,
+            "matricula_check": None,
+            "has_critical_findings": False,
+            "critical_findings": [],
+            "matricula_ocr": matricula_ocr_json,
+        }
+        try:
+            await run_in_threadpool(sb.insert_legal_check, placeholder)
+        except SupabaseError as exc:
+            logger.warning("legal.matricula.placeholder_failed", error=str(exc))
+
+    # 4. Devolve OCR + signed URL para download imediato.
+    signed_url: str | None = None
+    if pdf_path:
+        signed_url = await run_in_threadpool(
+            sb.get_legal_pdf_signed_url, path=pdf_path
+        )
+    return {
+        "matricula_ocr": matricula_ocr_json,
+        "pdf_signed_url": signed_url,
+    }

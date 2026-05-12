@@ -456,6 +456,18 @@ export type StartDeepAnalysisResponse = {
 // =============================================================================
 export type LegalCheckStatus = "completed" | "skipped" | "failed";
 
+export type ProcessCategory =
+  | "anulatoria"
+  | "embargos_arrematacao"
+  | "execucao_fiscal"
+  | "cumprimento_sentenca"
+  | "execucao_titulo"
+  | "penhora"
+  | "despejo"
+  | "busca_apreensao"
+  | "trabalhista"
+  | "outro";
+
 export type LegalProcessSummary = {
   numero_processo: string;
   classe_codigo: number | null;
@@ -464,6 +476,48 @@ export type LegalProcessSummary = {
   data_ajuizamento: string | null;
   tribunal: string;
   is_critical: boolean;
+  /** Categoria legível para filtro/destaque na UI. */
+  category?: ProcessCategory;
+};
+
+export type LienType =
+  | "hipoteca"
+  | "penhora"
+  | "usufruto"
+  | "alienacao_fiduciaria"
+  | "servidao"
+  | "indisponibilidade"
+  | "outro";
+
+export type MatriculaLien = {
+  tipo: LienType;
+  credor: string | null;
+  valor_brl: number | null;
+  data_registro: string | null;
+  av_numero: string | null;
+  notes: string | null;
+};
+
+export type MatriculaOcrResult = {
+  owner_name: string | null;
+  owner_cpf_cnpj: string | null;
+  matricula_number: string | null;
+  registry_office: string | null;
+  liens: MatriculaLien[];
+  is_clear: boolean;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  notes: string | null;
+  cost_estimate_usd: number | null;
+  pdf_path: string | null;
+  extracted_at: string | null;
+};
+
+export type WebFinding = {
+  title: string;
+  url: string;
+  snippet: string | null;
+  query: string;
+  score: number;
 };
 
 export type OwnerProcessesResult = {
@@ -480,6 +534,8 @@ export type OwnerProcessesResult = {
   critical_hits: number;
   critical_labels: string[];
   sample_processes: LegalProcessSummary[];
+  /** Lista COMPLETA (até 100/tribunal). Pode estar ausente em rows antigas. */
+  processes_full?: LegalProcessSummary[];
 };
 
 export type MatriculaCheckResult = {
@@ -500,6 +556,17 @@ export type LegalCheckResult = {
   matricula_check: MatriculaCheckResult;
   has_critical_findings: boolean;
   critical_findings: string[];
+  /** Achados Firecrawl (anulatórias/embargos). Pode estar ausente em rows antigas. */
+  web_findings?: WebFinding[];
+  /** OCR estruturado do PDF da matrícula (presente apenas após upload). */
+  matricula_ocr?: MatriculaOcrResult | null;
+  /** Signed URL para baixar o PDF original (1h). Backend popula sob demanda. */
+  matricula_pdf_signed_url?: string | null;
+};
+
+export type MatriculaUploadResponse = {
+  matricula_ocr: MatriculaOcrResult;
+  pdf_signed_url: string | null;
 };
 
 export type OpportunityAnalysisRow = {
@@ -752,6 +819,49 @@ export const api = {
     request<(LegalCheckResult & { id?: string | null }) | null>(
       `/api/v1/properties/${encodeURIComponent(propertyId)}/legal-checks/latest`,
     ),
+
+  /** Sobe o PDF da matrícula. Backend faz OCR via Vision e persiste o
+   * resultado no legal_check mais recente (ou cria placeholder). */
+  uploadMatriculaPdf: async (
+    propertyId: string,
+    file: File,
+  ): Promise<MatriculaUploadResponse> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const url = `${API_BASE}/api/v1/properties/${encodeURIComponent(propertyId)}/legal/matricula`;
+    // OCR via OpenAI Vision pode levar 30-60s. Timeout generoso (3 min)
+    // via AbortController — Chrome aborta o fetch silenciosamente se a
+    // resposta demora muito sem progresso.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180_000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        body: fd,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (err) {
+      // "Failed to fetch" vira aqui — tenta diferenciar timeout de outras causas.
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          "Tempo limite (3 min) excedido — Vision/OpenAI lento demais. Tente novamente.",
+        );
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Falha de rede ao enviar PDF (${msg}). Confira se o backend está em ${API_BASE} e o CORS permite ${typeof window !== "undefined" ? window.location.origin : "esta origem"}.`,
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`API ${res.status}: ${txt || res.statusText}`);
+    }
+    return (await res.json()) as MatriculaUploadResponse;
+  },
 
   // ===== Dashboard (home) =====
   getDashboard: (params?: {

@@ -82,6 +82,53 @@ _CRITICAL_CLASS_LABELS: Final[dict[int, str]] = {
 }
 
 
+# Mapeamento código → categoria legível usada na UI/relatório. Quando o
+# código não estiver mapeado, ``categorize_process`` cai em heurística
+# textual sobre ``classe_nome`` (anulatórias e embargos costumam aparecer
+# com classe "Procedimento Comum" e só dá pra identificar pelo nome).
+_CATEGORY_BY_CODE: Final[dict[int, str]] = {
+    159: "execucao_fiscal",
+    1116: "execucao_titulo",
+    156: "cumprimento_sentenca",
+    1733: "penhora",
+    62: "despejo",
+    12085: "busca_apreensao",
+}
+
+
+def categorize_process(
+    *,
+    classe_codigo: int | None,
+    classe_nome: str | None,
+    tribunal: str,
+) -> tuple[str, bool]:
+    """Devolve ``(category, is_critical)`` para um processo do DataJud.
+
+    Prioridades (na ordem):
+      1. Heurística textual para anulatórias/embargos — esses raramente
+         têm classe própria (vêm como Procedimento Comum, código 39); a
+         única pista é a palavra "anulação" ou "embargos" no nome.
+         Ambos são SEMPRE críticos (risco direto à arrematação).
+      2. TRT — qualquer processo trabalhista é crítico (privilégio do
+         crédito) e ganha categoria ``trabalhista``.
+      3. Whitelist por código (``_CATEGORY_BY_CODE``) — crítico.
+      4. Fallback ``outro`` — não crítico.
+    """
+    name_l = (classe_nome or "").lower()
+    if "anula" in name_l and ("leil" in name_l or "arremat" in name_l):
+        return "anulatoria", True
+    if "embargo" in name_l and ("arremat" in name_l or "execu" in name_l):
+        return "embargos_arrematacao", True
+
+    if tribunal.startswith("trt"):
+        return "trabalhista", True
+
+    if classe_codigo is not None and classe_codigo in _CATEGORY_BY_CODE:
+        return _CATEGORY_BY_CODE[classe_codigo], True
+
+    return "outro", False
+
+
 # Mapeamento UF → slug do TJ. DataJud cobre TJs estaduais + tribunais
 # federais; defaultamos para o TJ da UF (foro mais provável da execução
 # civil que originou o leilão).
@@ -142,6 +189,7 @@ class ProcessHit:
     data_ajuizamento: str | None
     tribunal: str
     is_critical: bool
+    category: str = "outro"
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +249,7 @@ class DataJudService:
         cpf_cnpj: str,
         *,
         tribunal: str,
-        size: int = 20,
+        size: int = 100,
     ) -> DataJudQueryResult:
         """Busca processos onde a PARTE tem o documento informado.
 
@@ -251,7 +299,6 @@ class DataJudService:
         total_hits = total["value"] if isinstance(total, dict) else int(total or 0)
         raw_hits = hits_root.get("hits") or []
 
-        is_trt = tribunal.startswith("trt")
         processes: list[ProcessHit] = []
         for h in raw_hits:
             src = h.get("_source") or {}
@@ -261,24 +308,19 @@ class DataJudService:
                 classe_codigo_int = int(classe_codigo) if classe_codigo is not None else None
             except (TypeError, ValueError):
                 classe_codigo_int = None
-            # Critério de criticidade:
-            #   1) Classe processual está no whitelist patrimonial; OU
-            #   2) Tribunal é TRT — qualquer processo trabalhista contra a
-            #      empresa é sinal de risco para o imóvel (penhora de
-            #      bens do executado é rotina na fase de execução
-            #      trabalhista, e crédito trabalhista tem privilégio).
-            critical_by_class = (
-                classe_codigo_int is not None
-                and classe_codigo_int in _CRITICAL_CLASS_CODES
+            classe_nome = (
+                classe.get("nome") if isinstance(classe, dict) else None
             )
-            is_critical_hit = critical_by_class or is_trt
+            category, is_critical_hit = categorize_process(
+                classe_codigo=classe_codigo_int,
+                classe_nome=classe_nome,
+                tribunal=tribunal,
+            )
             processes.append(
                 ProcessHit(
                     numero_processo=str(src.get("numeroProcesso") or ""),
                     classe_codigo=classe_codigo_int,
-                    classe_nome=(
-                        classe.get("nome") if isinstance(classe, dict) else None
-                    ),
+                    classe_nome=classe_nome,
                     orgao_julgador=(
                         (src.get("orgaoJulgador") or {}).get("nome")
                         if isinstance(src.get("orgaoJulgador"), dict)
@@ -287,6 +329,7 @@ class DataJudService:
                     data_ajuizamento=src.get("dataAjuizamento"),
                     tribunal=tribunal,
                     is_critical=is_critical_hit,
+                    category=category,
                 )
             )
 
@@ -295,12 +338,16 @@ class DataJudService:
         for p in processes:
             if not p.is_critical:
                 continue
-            lbl = _CRITICAL_CLASS_LABELS.get(p.classe_codigo or 0)
-            if lbl:
-                labels_set.add(lbl)
-            elif p.tribunal.startswith("trt"):
-                # Classe não mapeada mas é TRT — sinal trabalhista genérico.
+            if p.category == "anulatoria":
+                labels_set.add("Ação anulatória de leilão")
+            elif p.category == "embargos_arrematacao":
+                labels_set.add("Embargos à arrematação")
+            elif p.category == "trabalhista":
                 labels_set.add("Processo trabalhista")
+            else:
+                lbl = _CRITICAL_CLASS_LABELS.get(p.classe_codigo or 0)
+                if lbl:
+                    labels_set.add(lbl)
         critical_labels = sorted(labels_set)
 
         result = DataJudQueryResult(

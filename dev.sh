@@ -99,16 +99,19 @@ log_info "subindo BACKEND  (FastAPI + uvicorn) em :8000 ..."
 ) &
 BACKEND_PID=$!
 
-# Aguarda o backend ficar pronto (até 15s)
+# Aguarda o backend ficar pronto (até 30s — uvicorn demora ~2-5s pra carregar
+# imports pesados: langchain/langgraph/openai/firecrawl/supabase + agentes).
 log_info "aguardando backend em http://localhost:8000 ..."
-for i in $(seq 1 30); do
-  if curl -sS -o /dev/null -m 1 http://localhost:8000/api/v1/properties; then
+for i in $(seq 1 60); do
+  # -s (silent) sem -S: não imprime "Could not connect" enquanto o uvicorn
+  # ainda está importando módulos (normal nos primeiros segundos).
+  if curl -s -o /dev/null -m 1 http://localhost:8000/api/v1/properties 2>/dev/null; then
     log_info "backend pronto"
     break
   fi
   sleep 0.5
-  if [ "$i" = 30 ]; then
-    log_error "backend não respondeu em 15s — verifique os logs acima"
+  if [ "$i" = 60 ]; then
+    log_error "backend não respondeu em 30s — verifique os logs acima"
     exit 1
   fi
 done

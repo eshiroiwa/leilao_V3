@@ -92,7 +92,7 @@ def test_check_processes_normalizes_punctuation_from_user_input() -> None:
     assert out.status == "completed"
     assert out.cpf_cnpj == "12345678900"  # só dígitos
     dj.search_by_document.assert_called_once_with(
-        "12345678900", tribunal="tjsp", size=20,
+        "12345678900", tribunal="tjsp", size=100,
     )
 
 

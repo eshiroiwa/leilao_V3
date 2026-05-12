@@ -15,6 +15,7 @@
 
 import type {
   DeepAnalysisRow,
+  LegalCheckResult,
   OpportunityResult,
   OpportunityScenario,
   Property,
@@ -400,10 +401,20 @@ function paymentModeLabel(mode: string | null | undefined): string {
   return "à vista";
 }
 
+export type ScenarioLabel = "pessimista" | "realista" | "otimista";
+
 function renderOpportunity(
   result: OpportunityResult,
   property: Property,
+  options: {
+    selectedScenarios: ScenarioLabel[];
+    /** Cabeçalho opcional para distinguir múltiplas análises no relatório
+     * (ex.: "Cenário 1 — Financiado 30% / 240m"). */
+    sectionLabel?: string;
+  } = { selectedScenarios: ["pessimista", "realista", "otimista"] },
 ): string {
+  const selected = options.selectedScenarios;
+  const sectionLabel = options.sectionLabel;
   const verdictMap: Record<
     OpportunityResult["verdict"],
     { label: string; cls: string }
@@ -452,9 +463,30 @@ function renderOpportunity(
           <div class="val">—</div>
         </div>`;
 
+  // Filtra cenários selecionados, preservando ordem natural pess→real→oti.
+  const scenarioByLabel = {
+    pessimista: result.pessimista,
+    realista: result.realista,
+    otimista: result.otimista,
+  } as const;
+  const orderedSelected: ScenarioLabel[] = (
+    ["pessimista", "realista", "otimista"] as ScenarioLabel[]
+  ).filter((l) => selected.includes(l));
+  // Largura do grid se adapta ao número de cards (1/2/3 colunas).
+  const gridStyle =
+    orderedSelected.length === 1
+      ? "grid-template-columns:minmax(0,1fr)"
+      : orderedSelected.length === 2
+        ? "grid-template-columns:repeat(2,minmax(0,1fr))"
+        : "";
+
   return `
 <section class="section">
-  <h2>Análise de oportunidade
+  <h2>${
+    sectionLabel
+      ? `<span style="display:block;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">${esc(sectionLabel)}</span>`
+      : ""
+  }Análise de oportunidade
     <span class="tag ${v.cls}" style="margin-left:8px">${esc(v.label)}</span>
   </h2>
   <div class="muted">
@@ -465,10 +497,12 @@ function renderOpportunity(
     )} · Imóvel em ${esc(property.city ?? "")}/${esc(property.state ?? "")}
   </div>
 
-  <div class="grid-3" style="margin-top:14px">
-    ${renderScenario(result.pessimista)}
-    ${renderScenario(result.realista, true)}
-    ${renderScenario(result.otimista)}
+  <div class="grid-3" style="margin-top:14px${gridStyle ? `;${gridStyle}` : ""}">
+    ${orderedSelected
+      .map((label) =>
+        renderScenario(scenarioByLabel[label], label === "realista"),
+      )
+      .join("")}
   </div>
 
   ${maxBidBlock}
@@ -1316,16 +1350,197 @@ window.__initReportMap__ = __initReportMap__;
 `;
 
 // =============================================================================
+// Análise jurídica — seção opcional no relatório
+// =============================================================================
+const LEGAL_CATEGORY_LABEL: Record<string, string> = {
+  anulatoria: "Anulatória",
+  embargos_arrematacao: "Embargos à arrematação",
+  execucao_fiscal: "Execução fiscal",
+  cumprimento_sentenca: "Cumprimento de sentença",
+  execucao_titulo: "Execução de título",
+  penhora: "Penhora",
+  despejo: "Despejo",
+  busca_apreensao: "Busca e apreensão",
+  trabalhista: "Trabalhista",
+  outro: "Outro",
+};
+
+const LEGAL_LIEN_LABEL: Record<string, string> = {
+  hipoteca: "Hipoteca",
+  penhora: "Penhora",
+  usufruto: "Usufruto",
+  alienacao_fiduciaria: "Alienação fiduciária",
+  servidao: "Servidão",
+  indisponibilidade: "Indisponibilidade",
+  outro: "Outro",
+};
+
+type ReportLegalCheck = LegalCheckResult & { id?: string | null };
+
+function renderLegal(check: ReportLegalCheck | null): string {
+  if (!check) return "";
+  const owner = check.owner_processes;
+  const ocr = check.matricula_ocr ?? null;
+  const web = check.web_findings ?? [];
+  const all =
+    owner?.processes_full ?? owner?.sample_processes ?? [];
+  const critical = all.filter((p) => p.is_critical);
+  const topWeb = [...web]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  const verdictTag = check.has_critical_findings
+    ? '<span class="tag danger" style="margin-left:8px">Risco crítico</span>'
+    : '<span class="tag muted" style="margin-left:8px">Sem critical findings</span>';
+
+  const identityRows: string[] = [];
+  if (owner?.cpf_cnpj) {
+    identityRows.push(
+      `<div class="row"><span class="lbl">CPF/CNPJ proprietário</span><span class="val">${esc(owner.cpf_cnpj)}</span></div>`,
+    );
+  }
+  if (owner?.tribunals_queried && owner.tribunals_queried.length > 0) {
+    identityRows.push(
+      `<div class="row"><span class="lbl">Tribunais consultados</span><span class="val">${esc(owner.tribunals_queried.map((t) => t.toUpperCase()).join(" · "))}</span></div>`,
+    );
+  }
+
+  const criticalBlock =
+    critical.length === 0
+      ? ""
+      : `
+        <h3 style="margin-top:14px;font-size:13px">Processos críticos (${critical.length})</h3>
+        <ul style="list-style:none;padding:0;margin:6px 0 0;display:flex;flex-direction:column;gap:6px">
+          ${critical
+            .slice(0, 15)
+            .map((p) => {
+              const catLabel =
+                LEGAL_CATEGORY_LABEL[p.category ?? "outro"] ??
+                "Outro";
+              return `<li style="border:1px solid var(--danger);background:rgba(220,38,38,.05);border-radius:6px;padding:6px 8px;font-size:12px">
+                <div style="display:flex;justify-content:space-between;gap:8px">
+                  <code style="font-family:ui-monospace,monospace;font-size:11px">${esc(p.numero_processo)}</code>
+                  <span class="tag danger" style="font-size:10px">${esc(catLabel)}</span>
+                </div>
+                <div class="muted" style="font-size:10px;margin-top:2px">
+                  ${esc(p.classe_nome ?? "")} ${p.tribunal ? `· ${esc(p.tribunal.toUpperCase())}` : ""}
+                  ${p.data_ajuizamento ? `· ${esc(p.data_ajuizamento.slice(0, 10))}` : ""}
+                </div>
+              </li>`;
+            })
+            .join("")}
+        </ul>`;
+
+  const matriculaBlock = !ocr
+    ? ""
+    : `
+        <h3 style="margin-top:14px;font-size:13px">Matrícula</h3>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          ${ocr.owner_name ? `<div class="row"><span class="lbl">Proprietário</span><span class="val">${esc(ocr.owner_name)}</span></div>` : ""}
+          ${ocr.owner_cpf_cnpj ? `<div class="row"><span class="lbl">CPF/CNPJ</span><span class="val">${esc(ocr.owner_cpf_cnpj)}</span></div>` : ""}
+          ${ocr.matricula_number ? `<div class="row"><span class="lbl">Número</span><span class="val">${esc(ocr.matricula_number)}</span></div>` : ""}
+          ${ocr.registry_office ? `<div class="row"><span class="lbl">Cartório</span><span class="val">${esc(ocr.registry_office)}</span></div>` : ""}
+        </div>
+        ${
+          ocr.liens.length > 0
+            ? `<h4 style="margin:8px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#991b1b">Ônus ativos (${ocr.liens.length})</h4>
+              <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px">
+                ${ocr.liens
+                  .map((l) => {
+                    const label = LEGAL_LIEN_LABEL[l.tipo] ?? l.tipo;
+                    const details: string[] = [];
+                    if (l.credor) details.push(esc(l.credor));
+                    if (l.valor_brl != null) details.push(fmtBRL(l.valor_brl));
+                    if (l.data_registro) details.push(esc(l.data_registro));
+                    if (l.av_numero) details.push(esc(l.av_numero));
+                    return `<li style="border:1px solid var(--danger);background:rgba(220,38,38,.05);border-radius:6px;padding:4px 8px;font-size:11px">
+                      <strong>${esc(label)}</strong>${details.length > 0 ? `<span class="muted"> · ${details.join(" · ")}</span>` : ""}
+                    </li>`;
+                  })
+                  .join("")}
+              </ul>`
+            : `<p style="font-size:11px;color:var(--success,#15803d);margin-top:6px">✓ Livre de ônus ativos</p>`
+        }
+        ${ocr.notes ? `<p class="muted" style="font-size:10px;margin-top:6px;font-style:italic">${esc(ocr.notes)}</p>` : ""}`;
+
+  const webBlock =
+    topWeb.length === 0
+      ? ""
+      : `
+        <h3 style="margin-top:14px;font-size:13px">Achados na web (top ${topWeb.length})</h3>
+        <ul style="list-style:none;padding:0;margin:6px 0 0;display:flex;flex-direction:column;gap:4px">
+          ${topWeb
+            .map(
+              (f) => `<li style="border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:11px">
+              <a href="${esc(f.url)}" target="_blank" rel="noreferrer" class="report-link" style="font-weight:500;color:var(--primary)">${esc(f.title)}</a>
+              <span class="muted" style="font-size:10px;margin-left:6px">score ${f.score.toFixed(2)}</span>
+              ${f.snippet ? `<div class="muted" style="font-size:10px;margin-top:2px">${esc(f.snippet)}</div>` : ""}
+            </li>`,
+            )
+            .join("")}
+        </ul>
+        <p class="muted" style="font-size:10px;margin-top:4px;font-style:italic">Pode incluir homônimos — verifique manualmente.</p>`;
+
+  return `
+<section class="section">
+  <h2>Análise jurídica${verdictTag}</h2>
+  <div style="font-size:12px;color:var(--muted);margin-top:4px">
+    ${owner ? `${owner.total_hits} processo(s) total · ${owner.critical_hits} crítico(s)` : "sem dados"}
+  </div>
+
+  ${identityRows.length > 0 ? `<div class="block muted-block" style="margin-top:12px;display:flex;flex-direction:column;gap:4px;font-size:12px">${identityRows.join("")}</div>` : ""}
+
+  ${
+    check.critical_findings.length > 0
+      ? `<ul class="warnings" style="margin-top:8px">${check.critical_findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>`
+      : ""
+  }
+
+  ${criticalBlock}
+  ${matriculaBlock}
+  ${webBlock}
+</section>`;
+}
+
+
+// =============================================================================
 // Função pública
 // =============================================================================
+export type ReportAnalysis = {
+  /** OpportunityResult a ser renderizado. */
+  result: OpportunityResult;
+  /** Rótulo descritivo (ex.: "À vista — lance 1ª praça"). Opcional. */
+  label?: string;
+};
+
 export function generateReportHtml(args: {
   property: Property;
-  opportunity: OpportunityResult;
+  /** Uma ou mais análises de oportunidade. Cada uma vira uma seção. */
+  analyses: ReportAnalysis[];
+  /** Valuation (mapa + CMA são compartilhados entre análises do mesmo property). */
   valuation: ValuationDetail | null;
   deepAnalysis: DeepAnalysisRow | null;
+  /** Última análise jurídica persistida. Inclui seção "Análise jurídica"
+   *  no relatório quando presente. */
+  legalCheck?: ReportLegalCheck | null;
   apiKey: string;
+  /** Quais cenários internos (pess/real/oti) incluir em cada análise.
+   * Default: todos. */
+  selectedScenarios?: ScenarioLabel[];
 }): string {
-  const { property, opportunity, valuation, deepAnalysis, apiKey } = args;
+  const {
+    property,
+    analyses,
+    valuation,
+    deepAnalysis,
+    legalCheck,
+    apiKey,
+    selectedScenarios,
+  } = args;
+  const selected: ScenarioLabel[] =
+    selectedScenarios && selectedScenarios.length > 0
+      ? selectedScenarios
+      : ["pessimista", "realista", "otimista"];
   const comparables = valuation?.comparables ?? [];
   const title = `Relatório · ${property.title ?? property.property_type ?? "imóvel"}`;
   return `<!DOCTYPE html>
@@ -1339,8 +1554,19 @@ export function generateReportHtml(args: {
 <body>
 <div class="wrap">
   ${renderProperty(property)}
-  ${renderOpportunity(opportunity, property)}
+  ${analyses
+    .map((a, i) =>
+      renderOpportunity(a.result, property, {
+        selectedScenarios: selected,
+        sectionLabel:
+          analyses.length > 1
+            ? a.label ?? `Cenário ${i + 1}`
+            : undefined,
+      }),
+    )
+    .join("")}
   ${renderMap(property, comparables, apiKey)}
+  ${renderLegal(legalCheck ?? null)}
   ${deepAnalysis && deepAnalysis.status === "completed" ? renderDeep(deepAnalysis, property) : ""}
   <p class="muted" style="text-align:center;margin-top:18px">
     Relatório gerado automaticamente · ${esc(new Date().toLocaleString("pt-BR"))}

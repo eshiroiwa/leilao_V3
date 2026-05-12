@@ -25,6 +25,12 @@ dependencies = [
     "supabase>=2.9.1",
     # Geolocalização
     "googlemaps>=4.10.0",
+    # PDF → imagem para OCR de matrícula (puro Python, sem poppler)
+    "pypdfium2>=4.30.0",
+    # Pillow é dep transitiva de pypdfium2.to_pil() (encode em PNG)
+    "Pillow>=10.4.0",
+    # Multipart upload (FastAPI UploadFile)
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]

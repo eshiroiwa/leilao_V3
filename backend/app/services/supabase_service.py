@@ -745,9 +745,10 @@ class SupabaseService:
         return rows[0] if rows else None
 
     # ------------------------------------------------------------------ #
-    # Storage — bucket "deep-images" (AGENTE 4)
+    # Storage — bucket "deep-images" (AGENTE 4) + "legal-documents" (Legal)
     # ------------------------------------------------------------------ #
     DEEP_IMAGES_BUCKET = "deep-images"
+    LEGAL_DOCUMENTS_BUCKET = "legal-documents"
 
     def upload_deep_image(
         self,
@@ -794,6 +795,96 @@ class SupabaseService:
             bytes=len(content),
         )
         return public_url
+
+    # ------------------------------------------------------------------ #
+    # Storage — bucket privado "legal-documents" (Agente Legal)
+    # ------------------------------------------------------------------ #
+    def upload_legal_pdf(
+        self,
+        *,
+        property_id: str,
+        content: bytes,
+    ) -> str | None:
+        """Sobe um PDF de matrícula e devolve o PATH dentro do bucket.
+
+        Bucket é **privado** — frontend NUNCA recebe URL pública. Para
+        renderizar, peça uma signed URL via :meth:`get_legal_pdf_signed_url`.
+        Path: ``{property_id}/matricula_{epoch}.pdf`` (não usamos `upsert`
+        porque queremos manter histórico de uploads). Falha silenciosa.
+        """
+        import time as _t
+
+        path = f"{property_id}/matricula_{int(_t.time())}.pdf"
+        try:
+            self._client.storage.from_(self.LEGAL_DOCUMENTS_BUCKET).upload(
+                path,
+                content,
+                file_options={"content-type": "application/pdf"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "supabase.storage.legal_upload_failed",
+                bucket=self.LEGAL_DOCUMENTS_BUCKET,
+                path=path,
+                error=str(exc),
+            )
+            return None
+        logger.info(
+            "supabase.storage.legal_upload_ok",
+            bucket=self.LEGAL_DOCUMENTS_BUCKET,
+            path=path,
+            bytes=len(content),
+        )
+        return path
+
+    def get_legal_pdf_signed_url(
+        self,
+        *,
+        path: str,
+        expires_in: int = 3600,
+    ) -> str | None:
+        """Devolve signed URL temporária (default 1h) para download do PDF.
+
+        Retorna ``None`` em falha — o frontend trata como "PDF indisponível
+        no momento" e oferece re-upload.
+        """
+        try:
+            res = (
+                self._client.storage.from_(self.LEGAL_DOCUMENTS_BUCKET)
+                .create_signed_url(path, expires_in)
+            )
+        except Exception as exc:
+            logger.warning(
+                "supabase.storage.legal_signed_url_failed",
+                path=path,
+                error=str(exc),
+            )
+            return None
+        # supabase-py v2 retorna dict com chave 'signedURL' (camel) ou
+        # 'signed_url' (snake) dependendo da versão.
+        if isinstance(res, dict):
+            return res.get("signedURL") or res.get("signed_url")
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Legal checks — UPDATE incremental (matrícula entra depois do POST inicial)
+    # ------------------------------------------------------------------ #
+    def update_legal_check(
+        self, check_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        try:
+            res = (
+                self._client.table("legal_checks")
+                .update(fields)
+                .eq("id", check_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise SupabaseError(
+                f"Falha ao atualizar legal_check {check_id}: {exc}"
+            ) from exc
+        rows = res.data or []
+        return rows[0] if rows else None
 
     def get_latest_completed_deep_analysis(
         self, property_id: str

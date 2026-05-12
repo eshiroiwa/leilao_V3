@@ -27,7 +27,7 @@ import {
 import { formatBRL } from "@/lib/utils";
 
 import { BidSimulationTab } from "./BidSimulationTab";
-import { LegalCheckCard } from "./LegalCheckCard";
+import { LegalSummary } from "./LegalSummary";
 import { OpportunityForm } from "./OpportunityForm";
 import { ReportButton } from "./ReportButton";
 import { ScenarioCards } from "./ScenarioCards";
@@ -235,6 +235,7 @@ export function OpportunityView({
               property={property}
               result={result}
               valuationId={valuation?.id ?? null}
+              history={savedHistory}
               className="border-t pt-3"
             />
           </CardContent>
@@ -269,7 +270,7 @@ export function OpportunityView({
           />
         )}
 
-        <LegalCheckCard property={property} />
+        <LegalSummary property={property} />
 
         {savedHistory.length > 0 && (
           <Card>

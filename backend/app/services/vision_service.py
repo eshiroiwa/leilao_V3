@@ -162,8 +162,108 @@ def _encode_image(content: bytes, mime: str = "image/jpeg") -> str:
     return f"data:{mime};base64,{b64}"
 
 
+# =============================================================================
+# Matrícula imobiliária — OCR estruturado via Vision
+# =============================================================================
+MatriculaLienType = Literal[
+    "hipoteca",
+    "penhora",
+    "usufruto",
+    "alienacao_fiduciaria",
+    "servidao",
+    "indisponibilidade",
+    "outro",
+]
+
+
+class MatriculaLienPayload(BaseModel):
+    """Um ônus ativo identificado na matrícula."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: MatriculaLienType
+    credor: str | None = None
+    valor_brl: float | None = None
+    data_registro: str | None = Field(
+        default=None,
+        description="Data ISO 'YYYY-MM-DD' do registro do ônus.",
+    )
+    av_numero: str | None = Field(
+        default=None,
+        description="Número da Av./R. (Averbação/Registro) na matrícula.",
+    )
+    notes: str | None = Field(default=None, max_length=400)
+
+
+class MatriculaVisionPayload(BaseModel):
+    """Saída estruturada do OCR de uma matrícula imobiliária."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner_name: str | None = Field(
+        default=None,
+        description="Nome do proprietário ATUAL (transmissão mais recente).",
+    )
+    owner_cpf_cnpj: str | None = Field(
+        default=None,
+        description="CPF (11 dígitos) ou CNPJ (14) do proprietário atual.",
+    )
+    matricula_number: str | None = Field(
+        default=None,
+        description="Número da matrícula (ex.: '12.345' ou '12345').",
+    )
+    registry_office: str | None = Field(
+        default=None,
+        description="Cartório de Registro de Imóveis (CRI) emissor.",
+    )
+    liens: list[MatriculaLienPayload] = Field(
+        default_factory=list,
+        description="Ônus ATIVOS (descarte averbações canceladas/baixadas).",
+        max_length=20,
+    )
+    is_clear: bool = Field(
+        default=True,
+        description="True quando não há nenhum ônus ativo.",
+    )
+    confidence: Confidence = Field(
+        default="LOW",
+        description=(
+            "Confiança na extração. HIGH = matrícula nítida e completa;"
+            " MEDIUM = parcialmente legível; LOW = qualidade ruim/ambígua."
+        ),
+    )
+    notes: str | None = Field(
+        default=None,
+        max_length=600,
+        description="Observações livres em PT-BR.",
+    )
+
+
+_MATRICULA_SYSTEM_PROMPT: Final[str] = (
+    "Você é um perito em registros imobiliários brasileiros. Recebe N imagens"
+    " (páginas) de uma MATRÍCULA emitida por um Cartório de Registro de Imóveis"
+    " e devolve em JSON: nome do proprietário ATUAL, CPF/CNPJ (só dígitos),"
+    " número da matrícula, cartório (CRI), e lista de ÔNUS ATIVOS."
+    "\n"
+    "REGRAS:"
+    "\n - Proprietário ATUAL = última transmissão registrada (R-X, R-Y...)"
+    " sem cancelamento posterior."
+    "\n - Ônus ATIVOS: hipoteca, penhora, alienação fiduciária, usufruto,"
+    " servidão, indisponibilidade. EXCLUA averbações com 'cancelada',"
+    " 'baixada', 'levantada' ou que tenham averbação posterior anulando-as."
+    "\n - Para cada ônus: tipo + credor + valor (se houver) + data (YYYY-MM-DD)"
+    " + número Av./R. (ex.: 'Av.5', 'R-12')."
+    "\n - CPF/CNPJ em ``owner_cpf_cnpj`` SÓ os 11 ou 14 dígitos, sem pontuação."
+    "\n - Datas no formato ISO YYYY-MM-DD. Se só o ano for legível, omita."
+    "\n - ``is_clear=true`` somente quando ``liens`` estiver vazio."
+    "\n - Se a imagem não for matrícula ou estiver ilegível, devolva tudo null"
+    " com confidence=LOW."
+)
+
+
 class VisionService:
-    """Wrapper ao GPT-4o multimodal para avaliação visual do entorno."""
+    """Wrapper ao GPT-4o multimodal para avaliação visual do entorno
+    + extração estruturada de matrículas imobiliárias."""
 
     def __init__(self, *, api_key: str, model: str = "gpt-4o") -> None:
         # ``temperature=0`` deixa o output mais determinístico — bom para
@@ -171,6 +271,9 @@ class VisionService:
         self._llm = ChatOpenAI(
             api_key=api_key, model=model, temperature=0
         ).with_structured_output(NeighborhoodVisionPayload)
+        self._llm_matricula = ChatOpenAI(
+            api_key=api_key, model=model, temperature=0
+        ).with_structured_output(MatriculaVisionPayload)
         self._model = model
 
     def assess(
@@ -245,6 +348,60 @@ class VisionService:
 
         return payload if isinstance(payload, NeighborhoodVisionPayload) else None
 
+    # ------------------------------------------------------------------ #
+    # Matrícula imobiliária (OCR estruturado)
+    # ------------------------------------------------------------------ #
+    def assess_matricula(
+        self, pages: list[bytes], *, mime: str = "image/png"
+    ) -> MatriculaVisionPayload | None:
+        """OCR estruturado de uma matrícula a partir de páginas em bytes.
+
+        Cada elemento de ``pages`` é uma página renderizada em PNG/JPEG
+        (gerada por ``matricula_ocr_service`` a partir do PDF). NÃO levanta
+        — falha → ``None``.
+        """
+        if not pages:
+            return None
+        content_blocks: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f"Matrícula imobiliária com {len(pages)} página(s)."
+                    " Extraia o JSON estruturado conforme as instruções."
+                ),
+            }
+        ]
+        for i, png in enumerate(pages, start=1):
+            content_blocks.append(
+                {"type": "text", "text": f"[página {i}]"}
+            )
+            content_blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _encode_image(png, mime=mime),
+                        "detail": "high",
+                    },
+                }
+            )
+
+        try:
+            logger.info(
+                "vision.assess_matricula.start",
+                n_pages=len(pages),
+                model=self._model,
+            )
+            payload = self._llm_matricula.invoke(
+                [
+                    {"role": "system", "content": _MATRICULA_SYSTEM_PROMPT},
+                    {"role": "user", "content": content_blocks},
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("vision.assess_matricula.failed", error=str(exc))
+            return None
+        return payload if isinstance(payload, MatriculaVisionPayload) else None
+
 
 @lru_cache(maxsize=1)
 def get_vision_service() -> VisionService:
@@ -256,6 +413,9 @@ def get_vision_service() -> VisionService:
 
 
 __all__ = [
+    "MatriculaLienPayload",
+    "MatriculaLienType",
+    "MatriculaVisionPayload",
     "NeighborhoodVisionPayload",
     "VisionService",
     "VisionServiceError",

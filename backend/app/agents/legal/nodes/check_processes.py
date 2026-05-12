@@ -72,7 +72,7 @@ def check_processes(
 
     for tribunal in tribunals:
         try:
-            q = datajud.search_by_document(cpf_cnpj, tribunal=tribunal, size=20)
+            q = datajud.search_by_document(cpf_cnpj, tribunal=tribunal, size=100)
         except DataJudServiceError as exc:
             logger.warning(
                 "legal.check_processes.tribunal_failed",
@@ -98,9 +98,14 @@ def check_processes(
             ),
         )
 
-    # Sample: críticos primeiro, depois por data desc.
-    sample = [
-        ProcessSummary(
+    # Ordena: críticos primeiro, depois data desc.
+    sorted_all = sorted(
+        all_processes,
+        key=lambda x: (not x.is_critical, -(_date_key(x.data_ajuizamento))),
+    )
+
+    def _to_summary(p) -> ProcessSummary:  # type: ignore[no-untyped-def]
+        return ProcessSummary(
             numero_processo=p.numero_processo,
             classe_codigo=p.classe_codigo,
             classe_nome=p.classe_nome,
@@ -108,12 +113,11 @@ def check_processes(
             data_ajuizamento=p.data_ajuizamento,
             tribunal=p.tribunal,
             is_critical=p.is_critical,
+            category=p.category,  # type: ignore[arg-type]
         )
-        for p in sorted(
-            all_processes,
-            key=lambda x: (not x.is_critical, x.data_ajuizamento or ""),
-        )[:20]
-    ]
+
+    processes_full = [_to_summary(p) for p in sorted_all]
+    sample = processes_full[:20]
 
     logger.info(
         "legal.check_processes.done",
@@ -134,7 +138,19 @@ def check_processes(
         critical_hits=critical_hits,
         critical_labels=sorted(critical_labels_set),
         sample_processes=sample,
+        processes_full=processes_full,
     )
+
+
+def _date_key(s: str | None) -> int:
+    """Chave numérica para sort por data ISO (YYYY-MM-DD). Datas vazias caem no fundo."""
+    if not s:
+        return -1
+    try:
+        # "2024-05-10" → 20240510. Robusto a sufixos ISO.
+        return int(s[:10].replace("-", ""))
+    except (ValueError, TypeError):
+        return -1
 
 
 __all__ = ["check_processes"]
